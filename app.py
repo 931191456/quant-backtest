@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 量化回测网站 v2.2 - Streamlit主应用
-支持多策略组合、基准对比、报告导出的高性能回测系统
-新增：SKDJ指标支持、参数可自定义、买卖条件独立控制
+支持多策略组合、基准对比、报告导出
+性能优化：内置股票字典、减少重绘、快速响应
 """
 
 import streamlit as st
@@ -31,7 +31,7 @@ from utils import format_money, format_percent, INDEX_MAP
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v2.0",
+    page_title="量化回测系统 v2.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -148,7 +148,7 @@ if 'search_cache' not in st.session_state:
 
 # ==================== 侧边栏 - 参数设置 ====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v2.0")
+    st.markdown("## 📊 量化回测系统 v2.2")
     st.markdown("---")
     
     # ==================== 标的设置 ====================
@@ -166,11 +166,16 @@ with st.sidebar:
     hot_cols = st.columns(3)
     hot_stocks = get_hot_stocks()[:6]
     
+    # 预计算按钮key，避免每次rerun重新计算
+    default_symbols = ['000001', '600519', '600036']
     for i, (code, name) in enumerate(hot_stocks[:3]):
         with hot_cols[i]:
-            if st.button(f"{code[:3]}...", key=f"hot_{i}", help=f"{code} {name}"):
+            is_default = code == st.session_state.get('selected_symbol', '')
+            btn_label = f"⭐{code[:3]}"
+            if st.button(btn_label, key=f"hot_{i}", help=f"{code} {name}"):
                 st.session_state.selected_symbol = code
                 st.session_state.selected_name = name
+                st.rerun(scope="fragment")
     
     # 股票搜索输入
     search_key = st.text_input(
@@ -236,7 +241,7 @@ with st.sidebar:
     
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", value=datetime.now() - timedelta(days=365*3))
+        start_date = st.date_input("开始日期", value=datetime.now() - timedelta(days=365))  # 默认1年
     with col2:
         end_date = st.date_input("结束日期", value=datetime.now())
     
@@ -358,7 +363,7 @@ with st.sidebar:
 
 
 # ==================== 主内容区 ====================
-st.markdown('<div class="main-title">📈 量化回测系统 v2.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📈 量化回测系统 v2.2</div>', unsafe_allow_html=True)
 
 # 策略说明
 if selected_strategies:
@@ -586,31 +591,29 @@ if st.session_state.results is not None:
         st.info("💡 提示：HTML报告可用浏览器打印为PDF")
 
 else:
-    # 初始提示
+    # 初始提示（轻量级，不加载任何数据）
     st.markdown("---")
-    st.markdown("""
-    ### 🚀 欢迎使用量化回测系统 v2.0
-    
-    **新功能亮点：**
-    - ⚡ **速度优化**：数据缓存+搜索防抖，响应更快
-    - 🎯 **多策略组合**：支持RSI、KDJ、MACD等8种策略任意组合
-    - 📈 **基准对比**：支持沪深300、创业板指等指数对比
-    - 📤 **一键导出**：HTML报告、K线图批量导出
-    - 📊 **更多指标**：夏普比率、超额收益详细分析
-    
-    **使用步骤：**
-    1. 在左侧选择标的代码
-    2. 选择一个或多个策略
-    3. 设置回测参数和风控条件
-    4. 点击"开始回测"
-    """)
+    with st.container():
+        st.markdown("""
+        ### 🚀 量化回测系统 v2.2
+        
+        **使用步骤：**
+        1. 在左侧选择标的代码（支持股票、ETF）
+        2. 选择策略组合（支持MACD、RSI、KDJ、SKDJ等）
+        3. 设置回测参数和风控条件
+        4. 点击"开始回测"
+        
+        **策略组合逻辑：**
+        - 📈 买入：所有指标都处于看多状态
+        - 📉 卖出：任一指标转空就全部卖出
+        """)
 
 
 # ==================== 底部信息 ====================
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #6B7280; padding: 20px;'>"
-    "📈 量化回测系统 v2.0 | 数据来源：东方财富(akshare) | "
+    "📈 量化回测系统 v2.2 | 数据来源：东方财富(akshare) | "
     "投资有风险，策略仅供参考"
     "</div>",
     unsafe_allow_html=True

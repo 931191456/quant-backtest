@@ -1,6 +1,16 @@
 [server]
 headless = true
 port = 8501
+maxUploadSize = 200
+enableXsrfProtection = false
+
+[runner]
+fastReruns = true
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"
+gatherUsageStats = false
 
 [theme]
 primaryColor = "#1E88E5"
