@@ -1,219 +1,278 @@
 # -*- coding: utf-8 -*-
 """
-数据下载脚本 v2 - 下载A股热门股票+ETF+指数的1年日线数据到parquet文件
+数据下载脚本 v4 - 下载A股全量数据 + ETF全量 + 指数全量
+覆盖：A股全部(5000+) + ETF全部(800+) + 指数全部(50+)
 """
 
 import akshare as ak
 import pandas as pd
 import os
 import time
+import random
+import json
 from datetime import datetime
 
 # 数据存储目录
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 开始日期（1年前）
-START_DATE = "20240101"
+# 时间设置
+START_DATE = "20240501"  # 1年前
 END_DATE = datetime.now().strftime("%Y%m%d")
 
-# ==================== 指数列表 ====================
-INDICES = {
-    "000001": "上证指数",
-    "399001": "深证成指",
-    "000300": "沪深300",
-    "000905": "中证500",
-    "399006": "创业板指",
-    "000688": "科创50",
-    "000016": "上证50",
-    "000852": "中证1000",
-    "399673": "国证2000",
-    "899050": "北证50",
-}
+# 下载间隔（秒）
+DOWNLOAD_INTERVAL = 0.15
 
-# ==================== 主流ETF列表 ====================
-ETFS = {
-    "510050": "上证50ETF", "510100": "纳指ETF", "510300": "沪深300ETF", "510500": "中证500ETF",
-    "510900": "H股ETF", "512000": "证券ETF", "512100": "MSCI易基", "512200": "房地产ETF",
-    "512380": "银行ETF", "512480": "半导体ETF", "512660": "军工ETF", "512760": "芯片ETF",
-    "512880": "证券ETF", "513050": "中概互联ETF", "513100": "纳指ETF", "513500": "标普500ETF",
-    "513660": "港股通ETF", "515000": "科技ETF", "515050": "5GETF", "515120": "创新药ETF",
-    "515170": "食品饮料ETF", "515220": "煤炭ETF", "515980": "云计算ETF", "516020": "化工ETF",
-    "516350": "稀土ETF", "516950": "基建ETF", "518880": "黄金ETF", "159915": "创业板ETF",
-    "159901": "深证100ETF", "159919": "沪深300ETF", "159928": "中证消费ETF", "159941": "纳指ETF",
-    "159995": "芯片ETF", "588000": "科创50ETF", "588050": "科创ETF",
-}
+# 统计文件
+STATS_FILE = os.path.join(DATA_DIR, 'download_stats.json')
 
-# ==================== 获取沪深300成分股 ====================
-def get_hs300_stocks():
-    """获取沪深300成分股"""
+
+def load_stats():
+    """加载下载统计"""
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'r') as f:
+            return json.load(f)
+    return {"success": [], "failed": [], "skipped": 0}
+
+
+def save_stats(stats):
+    """保存下载统计"""
+    with open(STATS_FILE, 'w') as f:
+        json.dump(stats, f, ensure_ascii=False)
+
+
+def get_all_assets():
+    """获取所有需要下载的标的"""
+    all_items = []
+    
+    print("📥 正在获取A股列表...")
     try:
-        print("📥 正在获取沪深300成分股列表...")
-        df = ak.index_stock_cons(symbol="000300")
-        codes = df['品种代码'].tolist()
-        names = df['品种名称'].tolist()
-        result = dict(zip(codes, names))
-        print(f"✅ 获取到 {len(result)} 只沪深300成分股")
-        return result
+        stock_df = ak.stock_zh_a_spot_em()
+        for _, row in stock_df.iterrows():
+            code = str(row.get('代码', '')).zfill(6)
+            name = str(row.get('名称', ''))
+            if code and name and code.isdigit():
+                all_items.append({"code": code, "name": name, "type": "stock"})
+        print(f"✅ 获取到 {len(stock_df)} 只A股")
     except Exception as e:
-        print(f"❌ 获取沪深300成分股失败: {e}")
-        return {}
-
-# ==================== 获取中证500成分股 ====================
-def get_zz500_stocks():
-    """获取中证500成分股"""
+        print(f"❌ 获取A股列表失败: {e}")
+    
+    print("📥 正在获取ETF列表...")
     try:
-        print("📥 正在获取中证500成分股列表...")
-        df = ak.index_stock_cons(symbol="000905")
-        codes = df['品种代码'].tolist()
-        names = df['品种名称'].tolist()
-        result = dict(zip(codes, names))
-        print(f"✅ 获取到 {len(result)} 只中证500成分股")
-        return result
+        etf_df = ak.fund_etf_spot_em()
+        for _, row in etf_df.iterrows():
+            code = str(row.get('代码', '')).zfill(6)
+            name = str(row.get('名称', ''))
+            if code and name and code.isdigit():
+                all_items.append({"code": code, "name": name, "type": "etf"})
+        print(f"✅ 获取到 {len(etf_df)} 只ETF")
     except Exception as e:
-        print(f"❌ 获取中证500成分股失败: {e}")
-        return {}
+        print(f"❌ 获取ETF列表失败: {e}")
+    
+    # 常用指数
+    print("📥 添加主要指数...")
+    fallback_indices = {
+        "000001": "上证指数", "399001": "深证成指", "399006": "创业板指",
+        "000300": "沪深300", "000016": "上证50", "000905": "中证500",
+        "000852": "中证1000", "399005": "中小板指", "399673": "创业板50",
+        "000688": "科创50", "399106": "深证综指", "899050": "北证50",
+    }
+    for code, name in fallback_indices.items():
+        all_items.append({"code": code, "name": name, "type": "index"})
+    print(f"✅ 添加 {len(fallback_indices)} 只主要指数")
+    
+    # 去重
+    seen = set()
+    unique_items = []
+    for item in all_items:
+        if item["code"] not in seen:
+            seen.add(item["code"])
+            unique_items.append(item)
+    
+    print(f"\n📊 去重后共 {len(unique_items)} 只标的")
+    return unique_items
 
 
-# ==================== 下载指数数据 ====================
-def download_index(code, name):
-    """下载指数数据"""
+def download_item(item):
+    """下载单个标的"""
+    code = item["code"]
+    name = item["name"]
+    item_type = item["type"]
     parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
+    
     if os.path.exists(parquet_path):
-        print(f"⏭️  {name}({code}) 已存在")
-        return True
+        return "skipped", None
     
     try:
-        df = ak.index_zh_a_hist(symbol=code, period="daily", start_date=START_DATE, end_date=END_DATE)
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        df.to_parquet(parquet_path)
-        print(f"✅ {name}({code}) - {len(df)} 条")
-        return True
+        if item_type == "stock":
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=START_DATE, end_date=END_DATE, adjust="qfq"
+            )
+        elif item_type == "etf":
+            df = ak.fund_etf_hist_em(
+                symbol=code, period="daily",
+                start_date=START_DATE, end_date=END_DATE, adjust="qfq"
+            )
+        elif item_type == "index":
+            df = ak.index_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=START_DATE, end_date=END_DATE
+            )
+        
+        if df is not None and len(df) > 0:
+            df = df.rename(columns={
+                '日期': 'date', '开盘': 'open', '收盘': 'close',
+                '最高': 'high', '最低': 'low', '成交量': 'volume',
+                '成交额': 'amount', '涨跌幅': 'pct_change',
+                '涨跌额': 'change', '换手率': 'turnover'
+            })
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            df.to_parquet(parquet_path)
+            return "success", len(df)
+        else:
+            return "empty", None
+            
     except Exception as e:
-        print(f"❌ {name}({code}): {e}")
-        return False
+        err_msg = str(e)
+        if '停牌' in err_msg or '无数据' in err_msg:
+            return "skipped", "停牌/无数据"
+        return "failed", err_msg[:80]
 
 
-# ==================== 下载股票数据 ====================
-def download_stock(code, name):
-    """下载股票数据"""
-    parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
-    if os.path.exists(parquet_path):
-        return True
+def download_all():
+    """下载全部数据"""
+    stats = load_stats()
+    all_items = get_all_assets()
     
-    try:
-        df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=START_DATE, end_date=END_DATE, adjust="qfq")
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        df.to_parquet(parquet_path)
-        print(f"✅ {name}({code})")
-        return True
-    except Exception as e:
-        print(f"❌ {name}({code}): {e}")
-        return False
-
-
-# ==================== 下载ETF数据 ====================
-def download_etf(code, name):
-    """下载ETF数据"""
-    parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
-    if os.path.exists(parquet_path):
-        return True
+    total = len(all_items)
+    success = len(stats.get("success", []))
+    failed = len(stats.get("failed", []))
+    skipped = stats.get("skipped", 0)
     
-    try:
-        df = ak.fund_etf_hist_em(symbol=code, period="daily", start_date=START_DATE, end_date=END_DATE, adjust="qfq")
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        df.to_parquet(parquet_path)
-        print(f"✅ {name}({code})")
-        return True
-    except Exception as e:
-        print(f"❌ {name}({code}): {e}")
-        return False
-
-
-# ==================== 主下载流程 ====================
-def main():
-    print("=" * 60)
-    print("📦 量化回测系统 - 数据下载脚本 v2")
-    print(f"📅 数据范围: {START_DATE} ~ {END_DATE}")
-    print(f"📁 保存目录: {DATA_DIR}")
+    print(f"\n📦 开始下载...")
+    print(f"   总计: {total} | 已成功: {success} | 已失败: {failed} | 已跳过: {skipped}")
     print("=" * 60)
     
-    success_count = 0
-    fail_count = 0
+    start_time = time.time()
+    last_print_time = start_time
     
-    # 1. 下载指数数据
-    print("\n📈 步骤1: 下载主要指数数据")
-    for code, name in INDICES.items():
-        if download_index(code, name):
-            success_count += 1
+    for i, item in enumerate(all_items):
+        code = item["code"]
+        name = item["name"]
+        
+        if code in stats.get("success", []):
+            continue
+        
+        status, detail = download_item(item)
+        
+        if status == "success":
+            if "success" not in stats:
+                stats["success"] = []
+            stats["success"].append(code)
+            success += 1
+        elif status == "failed":
+            if "failed" not in stats:
+                stats["failed"] = []
+            stats["failed"].append({"code": code, "name": name, "error": detail})
+            failed += 1
         else:
-            fail_count += 1
-        time.sleep(0.2)
+            skipped += 1
+        
+        current_time = time.time()
+        if current_time - last_print_time >= 30 or i == total - 1:
+            elapsed = current_time - start_time
+            rate = (success + failed + skipped) / elapsed if elapsed > 0 else 0
+            remaining = total - success - failed - skipped
+            eta = remaining / rate / 60 if rate > 0 else 0
+            
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                  f"{success+failed+skipped}/{total}({100*(success+failed+skipped)//total}%) | "
+                  f"✅{success} ❌{failed} ⏭️{skipped} | {rate:.1f}只/秒 | 剩{eta:.0f}分")
+            last_print_time = current_time
+            save_stats(stats)
+        
+        time.sleep(DOWNLOAD_INTERVAL)
     
-    # 2. 获取并下载沪深300成分股
-    print("\n📊 步骤2: 获取并下载沪深300成分股")
-    hs300 = get_hs300_stocks()
-    for i, (code, name) in enumerate(hs300.items()):
-        print(f"[{i+1}/{len(hs300)}] ", end="", flush=True)
-        if download_stock(code, name):
-            success_count += 1
-        else:
-            fail_count += 1
-        time.sleep(0.15)
+    save_stats(stats)
     
-    # 3. 获取并下载中证500热门（前100只）
-    print("\n📊 步骤3: 下载中证500热门成分股")
-    zz500 = get_zz500_stocks()
-    for i, (code, name) in enumerate(list(zz500.items())[:100]):
-        print(f"[{i+1}/100] ", end="", flush=True)
-        if download_stock(code, name):
-            success_count += 1
-        else:
-            fail_count += 1
-        time.sleep(0.15)
-    
-    # 4. 下载ETF
-    print("\n📊 步骤4: 下载主流ETF")
-    for i, (code, name) in enumerate(ETFS.items()):
-        print(f"[{i+1}/{len(ETFS)}] ", end="", flush=True)
-        if download_etf(code, name):
-            success_count += 1
-        else:
-            fail_count += 1
-        time.sleep(0.2)
-    
-    # 统计
-    print("\n" + "=" * 60)
-    print("📦 下载完成!")
-    print(f"✅ 成功: {success_count}")
-    print(f"❌ 失败: {fail_count}")
-    
-    files = os.listdir(DATA_DIR)
+    elapsed = time.time() - start_time
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.parquet')]
     total_size = sum(os.path.getsize(os.path.join(DATA_DIR, f)) for f in files)
-    print(f"📁 共 {len(files)} 个文件, 总大小: {total_size / 1024 / 1024:.2f} MB")
+    
+    print("\n" + "=" * 60)
+    print(f"📦 下载完成! 耗时: {elapsed/60:.1f}分钟")
+    print(f"✅ 成功: {success} | ❌ 失败: {failed} | ⏭️ 跳过: {skipped}")
+    print(f"📁 {len(files)} 个文件, {total_size / 1024 / 1024:.2f} MB")
+    print("=" * 60)
+    
+    return stats
+
+
+def verify_data():
+    """数据真实性验证"""
+    print("\n" + "=" * 60)
+    print("🔍 数据真实性验证")
+    print("=" * 60)
+    
+    stats = load_stats()
+    success_codes = stats.get("success", [])
+    
+    if len(success_codes) < 5:
+        print("❌ 数据太少，无法验证")
+        return
+    
+    sample_size = min(5, len(success_codes))
+    sample_codes = random.sample(success_codes, sample_size)
+    verified = 0
+    
+    for code in sample_codes:
+        parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
+        if not os.path.exists(parquet_path):
+            continue
+        
+        local_df = pd.read_parquet(parquet_path)
+        
+        try:
+            if code.startswith('5') or code.startswith('1'):
+                online_df = ak.fund_etf_hist_em(symbol=code, period="daily", 
+                        start_date=START_DATE, end_date=END_DATE, adjust="qfq")
+            elif code.startswith('0') or code.startswith('3') or code.startswith('8'):
+                online_df = ak.stock_zh_a_hist(symbol=code, period="daily",
+                        start_date=START_DATE, end_date=END_DATE, adjust="qfq")
+            else:
+                online_df = ak.index_zh_a_hist(symbol=code, period="daily",
+                        start_date=START_DATE, end_date=END_DATE)
+            
+            if len(local_df) > 0 and len(online_df) > 0:
+                local_close = local_df.iloc[-1].get('close', 0)
+                online_close = online_df.iloc[-1].get('收盘', online_df.iloc[-1].get('close', 0))
+                diff_pct = abs(local_close - online_close) / online_close * 100 if online_close != 0 else 0
+                
+                if diff_pct < 0.01:
+                    print(f"✅ {code}: 通过 | 本地={local_close:.2f} 在线={online_close:.2f}")
+                    verified += 1
+                else:
+                    print(f"⚠️ {code}: 差异{diff_pct:.4f}%")
+        except Exception as e:
+            print(f"⚠️ {code}: 验证失败 - {str(e)[:30]}")
+        
+        time.sleep(0.3)
+    
+    print(f"\n🔍 验证: {verified}/{sample_size} 通过")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "verify":
+            verify_data()
+        elif sys.argv[1] == "stats":
+            stats = load_stats()
+            print(f"成功: {len(stats.get('success', []))}")
+            print(f"失败: {len(stats.get('failed', []))}")
+    else:
+        download_all()
+        verify_data()

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-数据获取模块 v3.0
-性能优化：本地parquet优先 + 索引起效 + akshare兜底
+数据获取模块 v3.1
+性能优化：本地parquet优先 + 自动更新 + 完善的异常处理
 """
 
 import akshare as ak
@@ -13,23 +13,23 @@ import streamlit as st
 import json
 import os
 from pathlib import Path
+import signal
 
-# 超时设置（秒）
+# 超时设置
 TIMEOUT = 10
-
-# 数据目录（parquet文件）
+MAX_RETRIES = 2
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+DATA_STALE_DAYS = 3  # 数据超过3天自动更新
 
-# ==================== 内置字典（用于搜索和缓存） ====================
-# 常用股票
+# ==================== 内置字典（用于搜索） ====================
 BUILTIN_STOCKS = {
-    # 沪深主板 - 热门
+    # 沪深主板热门
     "000001": "平安银行", "000002": "万科A", "000063": "中兴通讯", "000100": "TCL科技",
     "000157": "中联重科", "000333": "美的集团", "000338": "潍柴动力", "000425": "徐工机械",
     "000538": "云南白药", "000568": "泸州老窖", "000596": "古井贡酒", "000651": "格力电器",
     "000661": "长春高新", "000708": "大冶特钢", "000725": "京东方A", "000729": "燕京啤酒",
     "000768": "中航西飞", "000858": "五粮液", "000876": "新希望", "000895": "双汇发展",
-    "000898": "鞍钢股份", "000932": "华菱钢铁", "000938": "紫光股份", "000001": "平安银行",
+    "000898": "鞍钢股份", "000932": "华菱钢铁", "000938": "紫光股份",
     "600000": "浦发银行", "600004": "白云机场", "600009": "上海机场", "600011": "华能国际",
     "600015": "华夏银行", "600016": "民生银行", "600018": "上港集团", "600019": "宝钢股份",
     "600023": "浙能电力", "600026": "中金公司", "600028": "中国石化", "600029": "南方航空",
@@ -56,7 +56,7 @@ BUILTIN_STOCKS = {
     "601888": "中国中免", "601939": "建设银行", "601989": "中国重工", "601998": "中信银行",
     "603259": "药明康德", "603288": "海天味业", "603501": "韦尔股份", "603799": "华友钴业",
     "603986": "兆易创新",
-    # 创业板热门
+    # 创业板
     "300001": "特锐德", "300002": "神州泰岳", "300003": "乐普医疗", "300004": "南风股份",
     "300015": "爱尔眼科", "300033": "同花顺", "300059": "东方财富", "300124": "汇川技术",
     "300142": "沃森生物", "300223": "北京君正", "300274": "阳光电源", "300364": "中文在线",
@@ -69,7 +69,6 @@ BUILTIN_STOCKS = {
     "688981": "中芯国际",
 }
 
-# ETF字典
 BUILTIN_ETFS = {
     "510050": "上证50ETF", "510100": "纳指ETF", "510300": "沪深300ETF", "510500": "中证500ETF",
     "510900": "H股ETF", "512000": "证券ETF", "512100": "MSCI易基", "512200": "房地产ETF",
@@ -82,33 +81,26 @@ BUILTIN_ETFS = {
     "159995": "芯片ETF", "588000": "科创50ETF", "588050": "科创ETF",
 }
 
-# 指数字典
 BUILTIN_INDICES = {
     "000001": "上证指数", "399001": "深证成指", "399006": "创业板指", "000300": "沪深300",
     "000016": "上证50", "000905": "中证500", "000852": "中证1000", "399005": "中小板指",
     "399673": "创业板50", "000688": "科创50", "399106": "深证综指", "899050": "北证50",
 }
 
-# ==================== 统一搜索字典 ====================
+# 统一搜索字典
 ALL_ITEMS = {}
-
-# 添加股票
 for code, name in BUILTIN_STOCKS.items():
     ALL_ITEMS[code] = {"name": name, "type": "股票"}
-
-# 添加ETF
 for code, name in BUILTIN_ETFS.items():
     if code not in ALL_ITEMS:
         ALL_ITEMS[code] = {"name": name, "type": "ETF"}
-
-# 添加指数
 for code, name in BUILTIN_INDICES.items():
     if code not in ALL_ITEMS:
         ALL_ITEMS[code] = {"name": name, "type": "指数"}
 
 
 def search_all(keyword, limit=20):
-    """统一搜索：输入股票名称或代码都能搜"""
+    """统一搜索"""
     if not keyword:
         return []
     
@@ -126,31 +118,67 @@ def search_all(keyword, limit=20):
     return results
 
 
-# ==================== 核心：本地Parquet快速读取 ====================
+# ==================== 异常错误类 ====================
+class DataFetchError(Exception):
+    """数据获取错误"""
+    def __init__(self, message, error_type="unknown"):
+        self.message = message
+        self.error_type = error_type
+        super().__init__(self.message)
+
+
+class DataTimeoutError(DataFetchError):
+    """超时错误"""
+    def __init__(self, message="数据获取超时，请稍后重试"):
+        super().__init__(message, "timeout")
+
+
+class DataNotFoundError(DataFetchError):
+    """未找到错误"""
+    def __init__(self, code):
+        super().__init__(f"未找到股票 {code}，请检查代码是否正确", "not_found")
+
+
+class DataSuspendedError(DataFetchError):
+    """停牌错误"""
+    def __init__(self, code):
+        super().__init__(f"股票 {code} 当前停牌或无数据", "suspended")
+
+
+# ==================== 超时装饰器 ====================
+def timeout_handler(signum, frame):
+    raise TimeoutError("请求超时")
+
+
+def with_timeout(func):
+    """带超时的函数装饰器"""
+    def wrapper(*args, **kwargs):
+        # 注意：这里简化了，实际可用signal或threading实现真正的超时
+        return func(*args, **kwargs)
+    return wrapper
+
+
+# ==================== 核心：本地Parquet读取 ====================
 def _read_local_parquet(code, start_date=None, end_date=None):
-    """
-    从本地parquet读取数据 - 索引起效，读取极快
-    """
+    """从本地parquet读取数据"""
     parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
     
     if not os.path.exists(parquet_path):
         return None
     
     try:
-        # 使用pyarrow引擎，读取更快
         df = pd.read_parquet(parquet_path, engine='pyarrow')
         
         if df is None or len(df) == 0:
             return None
         
-        # 确保有date列
         if 'date' not in df.columns:
             return None
         
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date').reset_index(drop=True)
         
-        # 日期筛选（索引起效后这步很快）
+        # 日期筛选
         if start_date:
             if isinstance(start_date, str):
                 start_date = pd.to_datetime(start_date)
@@ -161,113 +189,197 @@ def _read_local_parquet(code, start_date=None, end_date=None):
             df = df[df['date'] <= end_date]
         
         return df
-    except Exception as e:
+    except Exception:
         return None
 
 
-# ==================== 数据获取（本地优先 + akshare兜底） ====================
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_etf_data(symbol, start_date, end_date, adjust="qfq"):
-    """获取ETF历史数据（本地优先）"""
-    symbol = symbol.zfill(6)
+def _check_data_freshness(df):
+    """检查数据新鲜度"""
+    if df is None or len(df) == 0:
+        return True  # 需要更新
     
-    # 1. 优先读本地 - 毫秒级
-    df = _read_local_parquet(symbol, start_date, end_date)
-    if df is not None and len(df) > 0:
-        return df
-    
-    # 2. 本地没有，在线拉
+    try:
+        last_date = pd.to_datetime(df['date'].max())
+        days_since_update = (datetime.now() - last_date).days
+        return days_since_update > DATA_STALE_DAYS
+    except:
+        return True
+
+
+def _save_to_parquet(df, code):
+    """保存数据到parquet"""
+    parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        df.to_parquet(parquet_path, engine='pyarrow')
+        return True
+    except:
+        return False
+
+
+# ==================== 数据获取（完善的异常处理） ====================
+def _fetch_etf_from_akshare(symbol, start_date, end_date, adjust="qfq"):
+    """从akshare获取ETF数据"""
     try:
         df = ak.fund_etf_hist_em(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust
+            symbol=symbol, period="daily",
+            start_date=start_date, end_date=end_date, adjust=adjust
         )
-        
         df = df.rename(columns={
             '日期': 'date', '开盘': 'open', '收盘': 'close',
             '最高': 'high', '最低': 'low', '成交量': 'volume',
             '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
             '涨跌额': 'change', '换手率': 'turnover'
         })
-        
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date').reset_index(drop=True)
         return df
-        
     except Exception as e:
-        raise Exception(f"获取ETF数据失败: {str(e)}")
+        err_msg = str(e).lower()
+        if '停牌' in err_msg or '无数据' in err_msg:
+            raise DataSuspendedError(symbol)
+        raise DataFetchError(str(e), "akshare_error")
+
+
+def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
+    """从akshare获取股票数据"""
+    try:
+        df = ak.stock_zh_a_hist(
+            symbol=symbol, period="daily",
+            start_date=start_date, end_date=end_date, adjust=adjust
+        )
+        df = df.rename(columns={
+            '日期': 'date', '开盘': 'open', '收盘': 'close',
+            '最高': 'high', '最低': 'low', '成交量': 'volume',
+            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
+            '涨跌额': 'change', '换手率': 'turnover'
+        })
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date').reset_index(drop=True)
+        return df
+    except Exception as e:
+        err_msg = str(e).lower()
+        if '不存在' in err_msg or 'not found' in err_msg:
+            raise DataNotFoundError(symbol)
+        if '停牌' in err_msg or '无数据' in err_msg:
+            raise DataSuspendedError(symbol)
+        raise DataFetchError(str(e), "akshare_error")
+
+
+def _fetch_index_from_akshare(symbol, start_date, end_date):
+    """从akshare获取指数数据"""
+    try:
+        df = ak.index_zh_a_hist(
+            symbol=symbol, period="daily",
+            start_date=start_date, end_date=end_date
+        )
+        df = df.rename(columns={
+            '日期': 'date', '开盘': 'open', '收盘': 'close',
+            '最高': 'high', '最低': 'low', '成交量': 'volume',
+            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
+            '涨跌额': 'change', '换手率': 'turnover'
+        })
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date').reset_index(drop=True)
+        return df
+    except Exception as e:
+        err_msg = str(e).lower()
+        if '不存在' in err_msg:
+            raise DataNotFoundError(symbol)
+        raise DataFetchError(str(e), "akshare_error")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_etf_data(symbol, start_date, end_date, adjust="qfq"):
+    """
+    获取ETF历史数据
+    1. 优先读本地parquet（秒开）
+    2. 检查数据新鲜度，超过3天自动更新
+    3. 本地没有则在线拉取
+    """
+    symbol = symbol.zfill(6)
+    
+    # 1. 读本地
+    df = _read_local_parquet(symbol, start_date, end_date)
+    
+    # 2. 检查是否需要更新
+    if df is not None and len(df) > 0:
+        # 数据太旧，更新
+        if _check_data_freshness(df):
+            try:
+                new_df = _fetch_etf_from_akshare(symbol, start_date, end_date, adjust)
+                if new_df is not None and len(new_df) > 0:
+                    _save_to_parquet(new_df, symbol)
+                    df = new_df
+            except DataFetchError:
+                pass  # 更新失败，用旧数据
+    
+    if df is not None and len(df) > 0:
+        return df
+    
+    # 3. 在线拉取
+    df = _fetch_etf_from_akshare(symbol, start_date, end_date, adjust)
+    if df is not None and len(df) > 0:
+        _save_to_parquet(df, symbol)
+    return df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stock_data(symbol, start_date, end_date, adjust="qfq"):
-    """获取个股历史数据（本地优先）"""
+    """获取个股历史数据"""
     symbol = symbol.zfill(6)
     
-    # 1. 优先读本地 - 毫秒级
+    # 1. 读本地
     df = _read_local_parquet(symbol, start_date, end_date)
+    
+    # 2. 检查是否需要更新
+    if df is not None and len(df) > 0:
+        if _check_data_freshness(df):
+            try:
+                new_df = _fetch_stock_from_akshare(symbol, start_date, end_date, adjust)
+                if new_df is not None and len(new_df) > 0:
+                    _save_to_parquet(new_df, symbol)
+                    df = new_df
+            except DataFetchError:
+                pass
+    
     if df is not None and len(df) > 0:
         return df
     
-    # 2. 本地没有，在线拉
-    try:
-        df = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust=adjust
-        )
-        
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        return df
-        
-    except Exception as e:
-        raise Exception(f"获取股票数据失败: {str(e)}")
+    # 3. 在线拉取
+    df = _fetch_stock_from_akshare(symbol, start_date, end_date, adjust)
+    if df is not None and len(df) > 0:
+        _save_to_parquet(df, symbol)
+    return df
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_index_data(symbol, start_date, end_date):
-    """获取指数历史数据（本地优先）"""
+    """获取指数历史数据"""
     symbol = symbol.zfill(6)
     
-    # 1. 优先读本地
+    # 1. 读本地
     df = _read_local_parquet(symbol, start_date, end_date)
+    
+    # 2. 检查是否需要更新
+    if df is not None and len(df) > 0:
+        if _check_data_freshness(df):
+            try:
+                new_df = _fetch_index_from_akshare(symbol, start_date, end_date)
+                if new_df is not None and len(new_df) > 0:
+                    _save_to_parquet(new_df, symbol)
+                    df = new_df
+            except DataFetchError:
+                pass
+    
     if df is not None and len(df) > 0:
         return df
     
-    # 2. 本地没有，在线拉
-    try:
-        df = ak.index_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date
-        )
-        
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '振幅': 'amplitude', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        return df
-        
-    except Exception as e:
-        raise Exception(f"获取指数数据失败: {str(e)}")
+    # 3. 在线拉取
+    df = _fetch_index_from_akshare(symbol, start_date, end_date)
+    if df is not None and len(df) > 0:
+        _save_to_parquet(df, symbol)
+    return df
 
 
 def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
@@ -283,7 +395,6 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
 
 # ==================== 兼容旧接口 ====================
 def get_stock_name_cached(symbol, stock_type="stock"):
-    """获取股票名称"""
     symbol = symbol.zfill(6)
     if stock_type == "ETF":
         return BUILTIN_ETFS.get(symbol, symbol)
@@ -294,49 +405,40 @@ def get_stock_name_cached(symbol, stock_type="stock"):
 
 
 def get_stock_name(symbol, stock_type="stock"):
-    """获取股票名称（兼容旧接口）"""
     return get_stock_name_cached(symbol, stock_type)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_stock_list_cached():
-    """获取股票列表"""
     return list(BUILTIN_STOCKS.items())
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_etf_list_cached():
-    """获取ETF列表"""
     return list(BUILTIN_ETFS.items())
 
 
 def search_stocks(keyword, stock_type="stock", limit=10):
-    """搜索股票"""
     if not keyword:
         return []
-    
     keyword = keyword.upper()
     results = []
-    
     if stock_type == "ETF":
         stock_dict = BUILTIN_ETFS
     elif stock_type == "指数":
         stock_dict = BUILTIN_INDICES
     else:
         stock_dict = BUILTIN_STOCKS
-    
     for code, name in stock_dict.items():
         if keyword in str(code) or keyword.upper() in name.upper():
             results.append((code, name))
             if len(results) >= limit:
                 break
-    
     return results
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_hot_stocks():
-    """获取热门股票列表"""
     return [
         ("000001", "平安银行"), ("000002", "万科A"), ("600000", "浦发银行"),
         ("600519", "贵州茅台"), ("600036", "招商银行"), ("000858", "五粮液"),
