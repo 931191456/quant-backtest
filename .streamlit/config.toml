@@ -1,9 +1,9 @@
-[theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#0e1117"
-secondaryBackgroundColor = "#262730"
-textColor = "#fafafa"
-font = "sans-serif"
-
 [server]
 headless = true
+port = 8501
+
+[theme]
+primaryColor = "#1E88E5"
+backgroundColor = "#0D1B2A"
+secondaryBackgroundColor = "#1B263B"
+textColor = "#E0E0E0"
