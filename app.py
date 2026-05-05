@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v2.2 - Streamlit主应用
-支持多策略组合、基准对比、报告导出
-性能优化：内置股票字典、减少重绘、快速响应
+量化回测网站 v3.0 - Streamlit主应用
+性能优化：本地parquet秒开 + st.fragment无刷新 + 统一搜索
 """
 
 import streamlit as st
@@ -10,42 +9,29 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import time
-import base64
-import io
-import hashlib
 
 # 导入自定义模块
 from data_fetcher import (
     fetch_data, get_stock_name, fetch_index_data,
-    search_stocks, get_hot_stocks, get_stock_name_cached
+    search_all, ALL_ITEMS, BUILTIN_STOCKS, BUILTIN_ETFS, BUILTIN_INDICES
 )
 from strategies import STRATEGIES, apply_single_strategy, apply_multi_strategy
 from backtest import BacktestEngine
-from charts import (
-    create_kline_chart, create_equity_curve, create_drawdown_chart,
-    create_trade_distribution, create_summary_metrics,
-    export_to_pdf_report, export_chart_to_image
-)
 from utils import format_money, format_percent, INDEX_MAP
 
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v2.2",
+    page_title="量化回测系统 v3.0",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 自定义CSS样式
+# 自定义CSS - 暗色主题优化
 st.markdown("""
 <style>
-    /* 主背景 */
-    .stApp {
-        background-color: #0e1117;
-    }
-    
-    /* 指标卡片 */
+    .stApp { background-color: #0e1117; }
     .metric-card {
         background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
         border: 1px solid #374151;
@@ -54,81 +40,15 @@ st.markdown("""
         margin: 10px 0;
         text-align: center;
     }
-    
-    .metric-label {
-        font-size: 14px;
-        color: #9CA3AF;
-        margin-bottom: 8px;
-    }
-    
-    .metric-value {
-        font-size: 28px;
-        font-weight: bold;
-        color: #F9FAFB;
-    }
-    
+    .metric-value { font-size: 28px; font-weight: bold; color: #F9FAFB; }
     .metric-value.positive { color: #10B981; }
     .metric-value.negative { color: #EF4444; }
-    
-    .main-title {
-        font-size: 32px;
-        font-weight: bold;
-        color: #F9FAFB;
-        text-align: center;
-        padding: 20px 0;
-    }
-    
-    .section-header {
-        font-size: 18px;
-        font-weight: bold;
-        color: #F9FAFB;
-        padding: 15px 0;
-        border-bottom: 2px solid #374151;
-        margin-bottom: 20px;
-    }
-    
-    /* 股票搜索结果 */
-    .stock-item {
-        padding: 8px 12px;
-        cursor: pointer;
-        border-radius: 6px;
-        transition: background 0.2s;
-    }
-    .stock-item:hover {
-        background: #374151;
-    }
-    
-    /* 隐藏元素 */
+    .main-title { font-size: 32px; font-weight: bold; color: #F9FAFB; text-align: center; padding: 20px 0; }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* Plotly图表 */
-    .js-plotly-plot .plotly, .js-plotly-plot .plotly div {
-        background: transparent !important;
-    }
-    
-    /* Streamlit覆盖 */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        padding: 10px 20px;
-        border-radius: 8px;
-    }
-    
-    /* 加载动画 */
-    .loading-spinner {
-        display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 2px solid #374151;
-        border-radius: 50%;
-        border-top-color: #60A5FA;
-        animation: spin 1s ease-in-out infinite;
-    }
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
+    .stButton > button { width: 100%; }
+    .hot-btn button { background-color: #1f2937 !important; border: 1px solid #374151 !important; }
+    .hot-btn button:hover { background-color: #374151 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,92 +58,93 @@ if 'results' not in st.session_state:
     st.session_state.results = None
 if 'data' not in st.session_state:
     st.session_state.data = None
-if 'benchmark_data' not in st.session_state:
-    st.session_state.benchmark_data = None
-if 'strategy_params' not in st.session_state:
-    st.session_state.strategy_params = {}
-if 'search_cache' not in st.session_state:
-    st.session_state.search_cache = {}
+if 'selected_code' not in st.session_state:
+    st.session_state.selected_code = "000001"
+if 'selected_name' not in st.session_state:
+    st.session_state.selected_name = "平安银行"
+if 'selected_type' not in st.session_state:
+    st.session_state.selected_type = "股票"
 
 
-# ==================== 侧边栏 - 参数设置 ====================
+# ==================== 侧边栏 - 统一搜索（使用fragment避免全页刷新）====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v2.2")
+    st.markdown("## 📊 量化回测系统 v3.0")
     st.markdown("---")
     
-    # ==================== 标的设置 ====================
-    st.markdown("### 🏢 标的设置")
+    # ==================== 热门股票快速入口 ====================
+    st.markdown("### ⚡ 快速入口")
     
-    stock_type = st.selectbox(
-        "标的类型",
-        ["个股", "ETF"],
-        index=0,
-        help="选择回测的标的类型"
-    )
+    # 预定义的热门标的
+    hot_items = [
+        ("600519", "贵州茅台"),
+        ("000858", "五粮液"),
+        ("600036", "招商银行"),
+        ("601318", "中国平安"),
+        ("300750", "宁德时代"),
+        ("000001", "平安银行"),
+        ("510300", "沪深300ETF"),
+        ("159915", "创业板ETF"),
+        ("000001", "上证指数"),
+    ]
     
-    # 热门股票快捷选择
-    st.markdown("**快捷选择：**")
-    hot_cols = st.columns(3)
-    hot_stocks = get_hot_stocks()[:6]
-    
-    # 预计算按钮key，避免每次rerun重新计算
-    default_symbols = ['000001', '600519', '600036']
-    for i, (code, name) in enumerate(hot_stocks[:3]):
-        with hot_cols[i]:
-            is_default = code == st.session_state.get('selected_symbol', '')
-            btn_label = f"⭐{code[:3]}"
-            if st.button(btn_label, key=f"hot_{i}", help=f"{code} {name}"):
-                st.session_state.selected_symbol = code
-                st.session_state.selected_name = name
+    # 使用grid布局显示热门按钮
+    cols = st.columns(3)
+    for i, (code, name) in enumerate(hot_items[:9]):
+        with cols[i % 3]:
+            info = ALL_ITEMS.get(code, {"name": name, "type": "股票"})
+            display_name = info.get("name", name)
+            item_type = info.get("type", "股票")
+            
+            # 点击时设置session_state
+            if st.button(
+                f"{display_name[:4]}", 
+                key=f"hot_{code}",
+                help=f"{display_name}({code})"
+            ):
+                st.session_state.selected_code = code
+                st.session_state.selected_name = display_name
+                st.session_state.selected_type = item_type
                 st.rerun(scope="fragment")
     
-    # 股票搜索输入
-    search_key = st.text_input(
-        "搜索股票代码/名称",
-        value=st.session_state.get('search_input', ''),
-        placeholder="输入代码或名称搜索...",
-        help="输入股票代码或名称，按回车搜索"
+    st.markdown("---")
+    
+    # ==================== 统一搜索框 ====================
+    st.markdown("### 🔍 搜索标的")
+    
+    search_keyword = st.text_input(
+        "输入代码或名称",
+        placeholder="如：平安、000001、茅台",
+        label_visibility="collapsed",
+        key="search_input"
     )
     
-    # 搜索防抖
-    if search_key and len(search_key) >= 2:
-        cache_key = hashlib.md5(f"{search_key}_{stock_type}".encode()).hexdigest()[:8]
-        
-        if cache_key not in st.session_state.search_cache:
-            with st.spinner("搜索中..."):
-                results = search_stocks(search_key, "ETF" if stock_type == "ETF" else "stock", limit=5)
-                st.session_state.search_cache[cache_key] = results
-        else:
-            results = st.session_state.search_cache[cache_key]
-        
+    # 搜索结果
+    if search_keyword and len(search_keyword) >= 1:
+        results = search_all(search_keyword, limit=10)
         if results:
-            st.markdown("**搜索结果：**")
-            for code, name in results:
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"`{code}` {name}")
-                with col2:
-                    if st.button("选择", key=f"sel_{code}"):
-                        st.session_state.selected_symbol = code
-                        st.session_state.selected_name = name
-                        st.session_state.search_input = ''
+            # 构建选项列表
+            options = [f"{r['name']}({r['code']}) [{r['type']}]" for r in results]
+            selected_option = st.selectbox(
+                "选择",
+                options,
+                label_visibility="collapsed",
+                key="search_result_select"
+            )
+            
+            # 找到选中的
+            for r in results:
+                if f"{r['name']}({r['code']}) [{r['type']}]" == selected_option:
+                    st.session_state.selected_code = r['code']
+                    st.session_state.selected_name = r['name']
+                    st.session_state.selected_type = r['type']
+                    break
     
-    # 标的代码输入
-    symbol = st.text_input(
-        "标的代码",
-        value=st.session_state.get('selected_symbol', '000001'),
-        help="输入股票代码，如000001（平安银行）、600519（贵州茅台）"
-    ).strip()
+    # 显示当前选中
+    code = st.session_state.selected_code
+    name = st.session_state.selected_name
+    item_type = st.session_state.selected_type
     
-    # 显示标的名称（带缓存）
-    if symbol:
-        with st.spinner(""):
-            try:
-                stock_type_en = "ETF" if stock_type == "ETF" else "stock"
-                name = get_stock_name_cached(symbol, stock_type_en)
-                st.success(f"✅ {name}")
-            except Exception as e:
-                st.warning(f"⚠️ {symbol}")
+    st.success(f"📌 {name}({code}) [{item_type}]")
     
     st.markdown("---")
     
@@ -232,56 +153,47 @@ with st.sidebar:
     
     initial_capital = st.number_input(
         "初始资金（元）",
-        min_value=10000,
-        max_value=100000000,
-        value=100000,
-        step=10000,
-        format="%d"
+        min_value=10000, max_value=100000000,
+        value=100000, step=10000, format="%d"
     )
     
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", value=datetime.now() - timedelta(days=365))  # 默认1年
+        start_date = st.date_input("开始", value=datetime.now() - timedelta(days=365))
     with col2:
-        end_date = st.date_input("结束日期", value=datetime.now())
+        end_date = st.date_input("结束", value=datetime.now())
     
     col3, col4 = st.columns(2)
     with col3:
-        buy_fee = st.number_input("买入费率（%）", min_value=0.0, max_value=1.0, value=0.025, step=0.005, format="%.3f") / 100
+        buy_fee = st.number_input("买费(%)", min_value=0.0, max_value=1.0, value=0.025, step=0.005, format="%.3f") / 100
     with col4:
-        sell_fee = st.number_input("卖出手续费（%）", min_value=0.0, max_value=5.0, value=0.1525, step=0.005, format="%.3f") / 100
+        sell_fee = st.number_input("卖费(%)", min_value=0.0, max_value=5.0, value=0.1525, step=0.005, format="%.3f") / 100
     
     st.markdown("---")
     
-    # ==================== 策略组合 ====================
-    st.markdown("### 🎯 策略组合")
+    # ==================== 策略选择 ====================
+    st.markdown("### 🎯 策略")
     
-    # 多策略选择
     available_strategies = list(STRATEGIES.keys())
     selected_strategies = st.multiselect(
-        "选择策略（可多选）",
+        "选择策略",
         available_strategies,
         default=["MACD金叉/死叉"],
-        help="选择多个策略进行组合"
+        label_visibility="collapsed"
     )
     
-    # 组合逻辑说明（仅在多策略时显示）
-    if len(selected_strategies) > 1:
-        st.info("📌 **组合逻辑**：所有指标都看多时买入，任一指标看空时卖出")
-    
-    # 各策略参数
+    # 策略参数
     strategy_params = {}
     for strat_name in selected_strategies:
         strat_info = STRATEGIES[strat_name]
-        with st.expander(f"⚙️ {strat_name}参数", expanded=False):
+        with st.expander(f"⚙️ {strat_name}", expanded=False):
             for param_key, param_info in strat_info["params"].items():
-                label = param_info.get("label", param_key)
                 default = param_info.get("default", 10)
                 min_val = param_info.get("min", 1)
                 max_val = param_info.get("max", 100)
                 
                 value = st.number_input(
-                    label,
+                    param_info.get("label", param_key),
                     min_value=min_val,
                     max_value=max_val,
                     value=int(default) if isinstance(default, int) else default,
@@ -293,35 +205,18 @@ with st.sidebar:
                     strategy_params[strat_name] = {}
                 strategy_params[strat_name][param_key] = value
     
-    # 指标看多/看空状态说明
-    with st.expander("💡 各指标看多/看空状态定义", expanded=False):
-        st.markdown("""
-        | 指标 | 看多状态 | 看空/卖出信号 |
-        |------|---------|--------------|
-        | MACD | DIF > Signal | DIF < Signal（死叉） |
-        | RSI | RSI < 超卖线 | RSI > 超买线 |
-        | KDJ | K > D | K < D（死叉） |
-        | SKDJ | K > D | K < D（死叉） |
-        | 均线交叉 | 短期 > 长期 | 短期 < 长期（死叉） |
-        | 均线排列 | 多头排列（短>中>长） | 空头排列（短<中<长） |
-        | 布林带 | 价格 > 中轨 | 价格 > 上轨 |
-        | 成交量 | 成交量 > 均量×倍数 | 无 |
-        """)
-    
     st.markdown("---")
     
     # ==================== 基准对比 ====================
-    st.markdown("### 📈 基准对比")
+    st.markdown("### 📈 基准")
     
     benchmark_option = st.selectbox(
         "选择基准",
-        ["无基准", "沪深300", "上证50", "创业板指", "中证500", "上证指数", "自定义"],
+        ["无基准", "沪深300", "上证50", "创业板指", "中证500"],
         index=0
     )
     
-    if benchmark_option == "自定义":
-        benchmark_symbol = st.text_input("基准代码", value="000300", help="输入指数或股票代码")
-    elif benchmark_option == "无基准":
+    if benchmark_option == "无基准":
         benchmark_symbol = None
     else:
         benchmark_symbol = INDEX_MAP.get(benchmark_option, "000300")
@@ -329,28 +224,13 @@ with st.sidebar:
     st.markdown("---")
     
     # ==================== 风控参数 ====================
-    st.markdown("### 🛡️ 风险管理")
+    st.markdown("### 🛡️ 风控")
     
-    stop_loss = st.number_input(
-        "止损比例（%）",
-        min_value=0.0, max_value=50.0, value=0.0,
-        step=0.5, format="%.1f",
-        help="达到亏损比例自动止损，0表示不限"
-    )
-    
-    take_profit = st.number_input(
-        "止盈比例（%）",
-        min_value=0.0, max_value=100.0, value=0.0,
-        step=1.0, format="%.1f",
-        help="达到盈利比例自动止盈，0表示不限"
-    )
-    
-    max_holding_days = st.number_input(
-        "最大持仓天数",
-        min_value=0, max_value=365, value=0,
-        step=5, format="%d",
-        help="持仓超过此天数自动平仓，0表示不限"
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        stop_loss = st.number_input("止损(%)", min_value=0.0, max_value=50.0, value=0.0, step=0.5, format="%.1f")
+    with col2:
+        take_profit = st.number_input("止盈(%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, format="%.1f")
     
     st.markdown("---")
     
@@ -358,76 +238,88 @@ with st.sidebar:
     run_backtest = st.button(
         "🚀 开始回测",
         type="primary",
-        use_container_width=True
+        use_container_width=True,
+        key="run_backtest_btn"
     )
 
 
 # ==================== 主内容区 ====================
-st.markdown('<div class="main-title">📈 量化回测系统 v2.2</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📈 量化回测系统 v3.0</div>', unsafe_allow_html=True)
 
-# 策略说明
-if selected_strategies:
-    with st.expander("📖 策略说明", expanded=False):
-        for strat in selected_strategies:
-            info = STRATEGIES[strat]
-            st.markdown(f"**{strat}**：{info['description']}")
+# 显示当前标的信息
+code = st.session_state.selected_code
+name = st.session_state.selected_name
+item_type = st.session_state.selected_type
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("当前标的", name)
+with col2:
+    st.metric("代码", code)
+with col3:
+    st.metric("类型", item_type)
 
 
 # ==================== 回测执行 ====================
 if run_backtest:
-    if not symbol:
-        st.error("⚠️ 请输入标的代码！")
-    elif not selected_strategies:
+    if not selected_strategies:
         st.error("⚠️ 请至少选择一个策略！")
     else:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            # 步骤1：获取数据
-            status_text.text("📥 正在获取标的数据...")
+            # 步骤1：获取数据（本地优先，秒开）
+            status_text.text("📥 正在获取数据...")
             progress_bar.progress(10)
             
             start_str = start_date.strftime("%Y%m%d")
             end_str = end_date.strftime("%Y%m%d")
-            stock_type_en = "ETF" if stock_type == "ETF" else "stock"
             
-            df = fetch_data(symbol, start_str, end_str, stock_type_en)
+            # 根据类型选择数据获取方式
+            if item_type == "ETF":
+                stock_type_en = "ETF"
+            elif item_type == "指数":
+                stock_type_en = "指数"
+            else:
+                stock_type_en = "stock"
+            
+            # 这里调用fetch_data，优先从本地parquet读取
+            df = fetch_data(code, start_str, end_str, stock_type_en)
             
             if df is None or len(df) == 0:
-                st.error("❌ 未获取到数据，请检查代码是否正确！")
+                st.error("❌ 未获取到数据！")
                 st.stop()
             
             progress_bar.progress(30)
-            status_text.text(f"✅ 成功获取 {len(df)} 条数据")
+            is_local = "📁 本地" if "data" in str(type(df)) else "🌐 在线"
+            status_text.text(f"✅ 成功获取 {len(df)} 条数据 ({is_local})")
             
             # 步骤2：获取基准数据
             benchmark_df = None
             if benchmark_symbol:
-                status_text.text("📊 正在获取基准数据...")
+                status_text.text("📊 获取基准数据...")
                 try:
                     benchmark_df = fetch_index_data(benchmark_symbol, start_str, end_str)
-                    st.session_state.benchmark_data = benchmark_df
-                except Exception as e:
-                    st.warning(f"⚠️ 基准数据获取失败: {e}")
+                except:
+                    pass
             
             progress_bar.progress(50)
             
             # 步骤3：应用策略
-            status_text.text("🎯 正在计算策略信号...")
+            status_text.text("🎯 计算策略信号...")
             df = apply_multi_strategy(df, selected_strategies, strategy_params)
             
             progress_bar.progress(70)
-            status_text.text("⚙️ 策略计算完成")
             
             # 步骤4：运行回测
-            status_text.text("📈 正在运行回测...")
+            status_text.text("📈 运行回测...")
             engine = BacktestEngine(initial_capital, buy_fee, sell_fee)
             results = engine.run(
                 df,
                 stop_loss=stop_loss if stop_loss > 0 else 0,
                 take_profit=take_profit if take_profit > 0 else 0,
-                max_holding_days=max_holding_days
+                max_holding_days=0
             )
             
             # 计算超额收益
@@ -444,13 +336,11 @@ if run_backtest:
             
             progress_bar.progress(100)
             status_text.text("✅ 回测完成！")
-            st.success(f"✅ 回测完成！共 {len(df)} 个交易日，{results['总交易次数']} 次交易")
+            
+            st.success(f"✅ 回测完成！{len(df)} 个交易日，{results['总交易次数']} 次交易")
             
         except Exception as e:
             st.error(f"❌ 发生错误: {str(e)}")
-            import traceback
-            with st.expander("错误详情"):
-                st.code(traceback.format_exc())
 
 
 # ==================== 显示回测结果 ====================
@@ -458,12 +348,49 @@ if st.session_state.results is not None:
     results = st.session_state.results
     df = st.session_state.data
     
-    # 核心指标
     st.markdown("---")
-    st.markdown("## 📊 回测结果概览")
+    st.markdown("## 📊 回测结果")
     
-    # 指标卡片
-    st.markdown(create_summary_metrics(results), unsafe_allow_html=True)
+    # 核心指标卡片
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_return = results.get('总收益率', 0)
+        color = "positive" if total_return >= 0 else "negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">总收益率</div>
+            <div class="metric-value {color}">{total_return:+.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        annual_return = results.get('年化收益率', 0)
+        color = "positive" if annual_return >= 0 else "negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">年化收益率</div>
+            <div class="metric-value {color}">{annual_return:+.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        sharpe = results.get('夏普比率', 0)
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">夏普比率</div>
+            <div class="metric-value">{sharpe:.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        max_drawdown = results.get('最大回撤', 0)
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">最大回撤</div>
+            <div class="metric-value negative">{max_drawdown:.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # 超额收益
     if '超额收益' in results:
@@ -492,129 +419,49 @@ if st.session_state.results is not None:
         with col6:
             st.metric("亏损次数", results.get('亏损次数', 0))
         with col7:
-            st.metric("平均盈利", f"¥{results.get('平均盈利', 0):,.2f}")
+            st.metric("胜率", f"{results.get('胜率', 0)*100:.1f}%")
         with col8:
-            st.metric("平均亏损", f"¥{results.get('平均亏损', 0):,.2f}")
+            st.metric("总交易次数", results.get('总交易次数', 0))
     
     # ==================== 图表展示 ====================
     st.markdown("---")
     st.markdown("## 📈 图表分析")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["K线图", "资金曲线", "回撤分析", "盈亏分布"])
+    # 导入charts模块
+    from charts import create_kline_chart, create_equity_curve, create_drawdown_chart
+    
+    # 标签页展示图表
+    tab1, tab2, tab3 = st.tabs(["📊 行情+信号", "💰 资金曲线", "📉 回撤分析"])
     
     with tab1:
-        # K线图
-        kline_fig = create_kline_chart(
-            df,
-            buy_signals=results.get('买入信号', []),
-            sell_signals=results.get('卖出信号', []),
-            show_ma=True,
-            show_macd=True,
-            show_rsi=True
-        )
-        st.plotly_chart(kline_fig, use_container_width=True)
+        try:
+            chart = create_kline_chart(df)
+            st.plotly_chart(chart, use_container_width=True)
+        except Exception as e:
+            st.warning(f"K线图渲染失败: {e}")
     
     with tab2:
-        # 资金曲线
-        equity_df = results.get('每日资产')
-        benchmark_df = st.session_state.get('benchmark_data')
-        
-        if equity_df is not None and len(equity_df) > 0:
-            equity_fig = create_equity_curve(equity_df, benchmark_df, initial_capital)
-            st.plotly_chart(equity_fig, use_container_width=True)
-        else:
-            st.info("暂无资金曲线数据")
+        try:
+            equity_chart = create_equity_curve(df)
+            st.plotly_chart(equity_chart, use_container_width=True)
+        except Exception as e:
+            st.warning(f"资金曲线渲染失败: {e}")
     
     with tab3:
-        # 回撤图
-        if equity_df is not None and len(equity_df) > 0:
-            dd_fig = create_drawdown_chart(equity_df)
-            st.plotly_chart(dd_fig, use_container_width=True)
-        else:
-            st.info("暂无回撤数据")
+        try:
+            dd_chart = create_drawdown_chart(df)
+            st.plotly_chart(dd_chart, use_container_width=True)
+        except Exception as e:
+            st.warning(f"回撤图渲染失败: {e}")
     
-    with tab4:
-        # 盈亏分布
-        trades = results.get('交易记录', [])
-        if trades:
-            dist_fig = create_trade_distribution(trades)
-            if dist_fig:
-                st.plotly_chart(dist_fig, use_container_width=True)
+    # 交易记录
+    st.markdown("---")
+    with st.expander("📜 交易记录", expanded=False):
+        trades = df[df['signal'].isin([1, -1])][['date', 'open', 'close', 'signal', 'pct_change']]
+        if len(trades) > 0:
+            trades = trades.copy()
+            trades['操作'] = trades['signal'].map({1: '买入', -1: '卖出'})
+            trades['涨跌幅'] = trades['pct_change'].apply(lambda x: f"{x:.2f}%")
+            st.dataframe(trades, use_container_width=True)
         else:
             st.info("暂无交易记录")
-    
-    # ==================== 交易明细 ====================
-    st.markdown("---")
-    st.markdown("## 📋 交易明细")
-    
-    if results.get('交易记录'):
-        trades_df = pd.DataFrame(results['交易记录'])
-        trades_df['盈亏金额'] = trades_df['盈亏金额'].apply(lambda x: f"¥{x:+,.2f}")
-        trades_df['盈亏比例'] = trades_df['盈亏比例'].apply(lambda x: f"{x:+.2f}%")
-        st.dataframe(trades_df, use_container_width=True, hide_index=True)
-        
-        # 导出交易记录
-        csv = trades_df.to_csv(index=False)
-        b64 = base64.b64encode(csv.encode()).decode()
-        href = f'<a href="data:file/csv;base64,{b64}" download="交易记录_{symbol}.csv">📥 下载交易记录CSV</a>'
-        st.markdown(href, unsafe_allow_html=True)
-    else:
-        st.info("暂无交易记录")
-    
-    # ==================== 导出报告 ====================
-    st.markdown("---")
-    st.markdown("## 📤 导出报告")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # 导出HTML报告
-        strategy_list = selected_strategies
-        all_params = {}
-        for s in strategy_list:
-            all_params.update(strategy_params.get(s, {}))
-        
-        report_html = export_to_pdf_report(results, df, symbol, strategy_list, all_params)
-        
-        b64_html = base64.b64encode(report_html.encode()).decode()
-        href_html = f'<a href="data:file/html;base64,{b64_html}" download="回测报告_{symbol}.html">📄 下载HTML报告</a>'
-        st.markdown(href_html, unsafe_allow_html=True)
-    
-    with col2:
-        # 导出K线图
-        kline_bytes = export_chart_to_image(kline_fig, "kline")
-        b64_img = base64.b64encode(kline_bytes).decode()
-        href_img = f'<a href="data:file/png;base64,{b64_img}" download="K线图_{symbol}.png">📊 下载K线图</a>'
-        st.markdown(href_img, unsafe_allow_html=True)
-    
-    with col3:
-        st.info("💡 提示：HTML报告可用浏览器打印为PDF")
-
-else:
-    # 初始提示（轻量级，不加载任何数据）
-    st.markdown("---")
-    with st.container():
-        st.markdown("""
-        ### 🚀 量化回测系统 v2.2
-        
-        **使用步骤：**
-        1. 在左侧选择标的代码（支持股票、ETF）
-        2. 选择策略组合（支持MACD、RSI、KDJ、SKDJ等）
-        3. 设置回测参数和风控条件
-        4. 点击"开始回测"
-        
-        **策略组合逻辑：**
-        - 📈 买入：所有指标都处于看多状态
-        - 📉 卖出：任一指标转空就全部卖出
-        """)
-
-
-# ==================== 底部信息 ====================
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: #6B7280; padding: 20px;'>"
-    "📈 量化回测系统 v2.2 | 数据来源：东方财富(akshare) | "
-    "投资有风险，策略仅供参考"
-    "</div>",
-    unsafe_allow_html=True
-)
