@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-策略引擎模块 v2.1
+策略引擎模块 v2.2
 支持多策略组合计算，新增SKDJ指标和参数可自定义
+核心逻辑：所有指标都看多时买入，任一指标看空时卖出
 """
 
 import pandas as pd
@@ -121,7 +122,10 @@ def ma_cross_signal(df, short_period=5, long_period=20):
     # 死叉（卖出）：短期均线下穿长期均线
     sell = (ma_short < ma_long) & (ma_short.shift(1) >= ma_long.shift(1))
     
-    return buy, sell
+    # 看多状态：短期均线在长期均线上方
+    bullish_state = ma_short > ma_long
+    
+    return buy, sell, bullish_state
 
 
 def macd_cross_signal(df, fast=12, slow=26, signal=9):
@@ -135,7 +139,10 @@ def macd_cross_signal(df, fast=12, slow=26, signal=9):
     buy = (macd > macd_signal) & (macd.shift(1) <= macd_signal.shift(1))
     sell = (macd < macd_signal) & (macd.shift(1) >= macd_signal.shift(1))
     
-    return buy, sell
+    # 看多状态：MACD在信号线上方
+    bullish_state = macd > macd_signal
+    
+    return buy, sell, bullish_state
 
 
 def rsi_signal(df, period=14, oversold=30, overbought=70):
@@ -148,7 +155,10 @@ def rsi_signal(df, period=14, oversold=30, overbought=70):
     buy = rsi < oversold
     sell = rsi > overbought
     
-    return buy, sell
+    # 看多状态：RSI低于超卖线
+    bullish_state = rsi < oversold
+    
+    return buy, sell, bullish_state
 
 
 def kdj_cross_signal(df, n=9, m1=3, m2=3):
@@ -162,7 +172,10 @@ def kdj_cross_signal(df, n=9, m1=3, m2=3):
     buy = (k > d) & (k.shift(1) <= d.shift(1))
     sell = (k < d) & (k.shift(1) >= d.shift(1))
     
-    return buy, sell
+    # 看多状态：K在D上方
+    bullish_state = k > d
+    
+    return buy, sell, bullish_state
 
 
 def skdj_cross_signal(df, n=9, m=3):
@@ -183,7 +196,10 @@ def skdj_cross_signal(df, n=9, m=3):
     # 死叉：K从上往下穿过D
     sell = (k < d) & (k.shift(1) >= d.shift(1))
     
-    return buy, sell
+    # 看多状态：K在D上方
+    bullish_state = k > d
+    
+    return buy, sell, bullish_state
 
 
 def volume_breakout_signal(df, period=20, multiplier=1.5):
@@ -197,7 +213,10 @@ def volume_breakout_signal(df, period=20, multiplier=1.5):
     buy = volume > vol_ma * multiplier
     sell = False  # 成交量突破不产生卖出信号
     
-    return buy, sell
+    # 看多状态：成交量大于均量
+    bullish_state = volume > vol_ma * multiplier
+    
+    return buy, sell, bullish_state
 
 
 def bollinger_breakout_signal(df, period=20, std_dev=2):
@@ -212,7 +231,11 @@ def bollinger_breakout_signal(df, period=20, std_dev=2):
     buy = close < bb_lower  # 价格跌破下轨买入
     sell = close > bb_upper  # 价格突破上轨卖出
     
-    return buy, sell
+    # 看多状态：价格在布林带中轨上方
+    bb_middle = df['bb_middle']
+    bullish_state = close > bb_middle
+    
+    return buy, sell, bullish_state
 
 
 def ma_arrangement_signal(df, short_period=5, long_period=60):
@@ -229,7 +252,10 @@ def ma_arrangement_signal(df, short_period=5, long_period=60):
     # 空头排列：短<中<长
     sell = (ma_short < ma_mid) & (ma_mid < ma_long)
     
-    return buy, sell
+    # 看多状态：均线多头排列
+    bullish_state = (ma_short > ma_mid) & (ma_mid > ma_long)
+    
+    return buy, sell, bullish_state
 
 
 # ==================== 策略注册表 ====================
@@ -319,18 +345,23 @@ def apply_single_strategy(df, strategy_name, **params):
     df = calculate_all_indicators(df)
     
     # 调用策略函数
-    buy_signal, sell_signal = func(df, **params)
+    buy_signal, sell_signal, bullish_state = func(df, **params)
     
     # 标记信号
     df['buy_signal'] = buy_signal
     df['sell_signal'] = sell_signal
+    df['bullish_state'] = bullish_state
     
     return df
 
 
-def apply_multi_strategy(df, selected_strategies, params_dict, buy_mode="any", sell_mode="any"):
+def apply_multi_strategy(df, selected_strategies, params_dict):
     """
-    应用多策略组合，支持买入和卖出条件独立控制
+    应用多策略组合
+    
+    核心逻辑：
+    - 买入条件：所有指标都处于看多状态（不要求同一天金叉）
+    - 卖出条件：任一指标发出卖出信号
     
     Parameters:
     -----------
@@ -340,14 +371,6 @@ def apply_multi_strategy(df, selected_strategies, params_dict, buy_mode="any", s
         选中的策略名称列表
     params_dict : dict
         各策略的参数字典 {"策略名": {"param1": value1, ...}}
-    buy_mode : str
-        买入模式
-        "all": 所有策略都满足才买入（保守）
-        "any": 任一策略满足就买入（激进）
-    sell_mode : str
-        卖出模式
-        "all": 所有策略都满足才卖出（保守）
-        "any": 任一策略满足就卖出（激进，更及时止损）
     
     Returns:
     --------
@@ -362,7 +385,7 @@ def apply_multi_strategy(df, selected_strategies, params_dict, buy_mode="any", s
     df = calculate_all_indicators(df)
     
     # 收集各策略的信号
-    strategy_buy_signals = []
+    strategy_bullish_states = []
     strategy_sell_signals = []
     
     for strategy_name in selected_strategies:
@@ -371,41 +394,29 @@ def apply_multi_strategy(df, selected_strategies, params_dict, buy_mode="any", s
         
         params = params_dict.get(strategy_name, {})
         func = STRATEGIES[strategy_name]["func"]
-        buy, sell = func(df, **params)
-        strategy_buy_signals.append(buy)
+        buy, sell, bullish_state = func(df, **params)
+        strategy_bullish_states.append(bullish_state)
         strategy_sell_signals.append(sell)
     
-    if not strategy_buy_signals:
+    if not strategy_bullish_states:
         df['buy_signal'] = False
         df['sell_signal'] = False
         return df
     
-    # 组合信号 - 买入条件
-    if buy_mode == "all":
-        # 所有策略都满足才买入（AND逻辑）
-        combined_buy = strategy_buy_signals[0]
-        for i in range(1, len(strategy_buy_signals)):
-            combined_buy = combined_buy & strategy_buy_signals[i]
-    else:
-        # 任一策略满足就买入（OR逻辑）
-        combined_buy = strategy_buy_signals[0]
-        for i in range(1, len(strategy_buy_signals)):
-            combined_buy = combined_buy | strategy_buy_signals[i]
+    # 买入条件：所有指标都处于看多状态
+    combined_bullish = strategy_bullish_states[0]
+    for i in range(1, len(strategy_bullish_states)):
+        combined_bullish = combined_bullish & strategy_bullish_states[i]
     
-    # 组合信号 - 卖出条件
-    if sell_mode == "all":
-        # 所有策略都满足才卖出（AND逻辑，更保守）
-        combined_sell = strategy_sell_signals[0]
-        for i in range(1, len(strategy_sell_signals)):
-            combined_sell = combined_sell & strategy_sell_signals[i]
-    else:
-        # 任一策略满足就卖出（OR逻辑，更激进，及时止损）
-        combined_sell = strategy_sell_signals[0]
-        for i in range(1, len(strategy_sell_signals)):
-            combined_sell = combined_sell | strategy_sell_signals[i]
+    # 卖出条件：任一指标发出卖出信号
+    combined_sell = strategy_sell_signals[0]
+    for i in range(1, len(strategy_sell_signals)):
+        combined_sell = combined_sell | strategy_sell_signals[i]
     
-    df['buy_signal'] = combined_buy
+    # 买入信号：所有指标都看多
+    df['buy_signal'] = combined_bullish
     df['sell_signal'] = combined_sell
+    df['combined_bullish'] = combined_bullish  # 保存组合看多状态用于调试
     
     return df
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v2.1 - Streamlit主应用
+量化回测网站 v2.2 - Streamlit主应用
 支持多策略组合、基准对比、报告导出的高性能回测系统
 新增：SKDJ指标支持、参数可自定义、买卖条件独立控制
 """
@@ -260,33 +260,9 @@ with st.sidebar:
         help="选择多个策略进行组合"
     )
     
-    # 策略组合条件设置（仅在多策略时显示）
+    # 组合逻辑说明（仅在多策略时显示）
     if len(selected_strategies) > 1:
-        st.markdown("**📌 组合条件设置**")
-        
-        col_buy, col_sell = st.columns(2)
-        with col_buy:
-            buy_mode = st.radio(
-                "买入条件",
-                ["激进（任一金叉即买）", "保守（全部金叉才买）"],
-                index=0,
-                horizontal=True,
-                help="激进：任一指标发出买入信号就买入；保守：所有指标都发出买入信号才买入"
-            )
-            buy_mode_value = "any" if "激进" in buy_mode else "all"
-        
-        with col_sell:
-            sell_mode = st.radio(
-                "卖出条件",
-                ["激进（任一死叉即卖）", "保守（全部死叉才卖）"],
-                index=0,
-                horizontal=True,
-                help="激进：任一指标发出卖出信号就卖出（更及时止损）；保守：所有指标都发出卖出信号才卖出"
-            )
-            sell_mode_value = "any" if "激进" in sell_mode else "all"
-    else:
-        buy_mode_value = "any"
-        sell_mode_value = "any"
+        st.info("📌 **组合逻辑**：所有指标都看多时买入，任一指标看空时卖出")
     
     # 各策略参数
     strategy_params = {}
@@ -312,18 +288,20 @@ with st.sidebar:
                     strategy_params[strat_name] = {}
                 strategy_params[strat_name][param_key] = value
     
-    # 组合条件说明
-    if len(selected_strategies) > 1:
-        with st.expander("💡 组合条件说明", expanded=False):
-            st.markdown("""
-            **激进买入**：任一指标发出金叉信号就买入，交易机会多但可能假信号多
-            
-            **保守买入**：所有指标都发出金叉信号才买入，信号更可靠但可能错过时机
-            
-            **激进卖出**：任一指标发出死叉信号就卖出，及时止损但可能卖得太早
-            
-            **保守卖出**：所有指标都发出死叉信号才卖出，持有更久但可能利润回吐
-            """)
+    # 指标看多/看空状态说明
+    with st.expander("💡 各指标看多/看空状态定义", expanded=False):
+        st.markdown("""
+        | 指标 | 看多状态 | 看空/卖出信号 |
+        |------|---------|--------------|
+        | MACD | DIF > Signal | DIF < Signal（死叉） |
+        | RSI | RSI < 超卖线 | RSI > 超买线 |
+        | KDJ | K > D | K < D（死叉） |
+        | SKDJ | K > D | K < D（死叉） |
+        | 均线交叉 | 短期 > 长期 | 短期 < 长期（死叉） |
+        | 均线排列 | 多头排列（短>中>长） | 空头排列（短<中<长） |
+        | 布林带 | 价格 > 中轨 | 价格 > 上轨 |
+        | 成交量 | 成交量 > 均量×倍数 | 无 |
+        """)
     
     st.markdown("---")
     
@@ -432,7 +410,7 @@ if run_backtest:
             
             # 步骤3：应用策略
             status_text.text("🎯 正在计算策略信号...")
-            df = apply_multi_strategy(df, selected_strategies, strategy_params, buy_mode=buy_mode_value, sell_mode=sell_mode_value)
+            df = apply_multi_strategy(df, selected_strategies, strategy_params)
             
             progress_bar.progress(70)
             status_text.text("⚙️ 策略计算完成")
