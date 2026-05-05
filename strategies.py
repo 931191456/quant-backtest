@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-策略引擎模块 v2.0
-支持多策略组合计算
+策略引擎模块 v2.1
+支持多策略组合计算，新增SKDJ指标和参数可自定义
 """
 
 import pandas as pd
@@ -67,14 +67,35 @@ def calculate_kdj(df, n=9, m1=3, m2=3):
     return df
 
 
-def calculate_skdj(df, period=9, smooth=3):
-    """计算SKDJ（慢速随机指标）"""
-    low_n = df['low'].rolling(window=period, min_periods=1).min()
-    high_n = df['high'].rolling(window=period, min_periods=1).max()
+def calculate_skdj(df, n=9, m=3):
+    """
+    计算SKDJ（慢速随机指标）
+    
+    Parameters:
+    -----------
+    df : DataFrame - K线数据
+    n : int - RSV周期（默认9）
+    m : int - 平滑周期（默认3），K和D都用此周期平滑
+    
+    SKDJ计算公式：
+    - RSV = (Close - Low_N) / (High_N - Low_N) * 100
+    - K = SMA(RSV, M) - M周期平滑
+    - D = SMA(K, M) - M周期平滑
+    """
+    # 计算N日内最低价和最高价
+    low_n = df['low'].rolling(window=n, min_periods=1).min()
+    high_n = df['high'].rolling(window=n, min_periods=1).max()
+    
+    # 计算RSV
     rsv = (df['close'] - low_n) / (high_n - low_n) * 100
     rsv = rsv.fillna(50)
-    df['skdj_k'] = rsv.rolling(window=smooth, min_periods=1).mean()
-    df['skdj_d'] = df['skdj_k'].rolling(window=smooth, min_periods=1).mean()
+    
+    # K值：RSV的M周期简单移动平均
+    df['skdj_k'] = rsv.rolling(window=m, min_periods=1).mean()
+    
+    # D值：K的M周期简单移动平均
+    df['skdj_d'] = df['skdj_k'].rolling(window=m, min_periods=1).mean()
+    
     return df
 
 
@@ -144,15 +165,22 @@ def kdj_cross_signal(df, n=9, m1=3, m2=3):
     return buy, sell
 
 
-def skdj_cross_signal(df, period=9, smooth=3):
-    """SKDJ金叉死叉策略"""
+def skdj_cross_signal(df, n=9, m=3):
+    """
+    SKDJ金叉死叉策略
+    
+    金叉：K上穿D → 买入信号
+    死叉：K下穿D → 卖出信号
+    """
     if 'skdj_k' not in df.columns:
-        df = calculate_skdj(df, period, smooth)
+        df = calculate_skdj(df, n, m)
     
     k = df['skdj_k']
     d = df['skdj_d']
     
+    # 金叉：K从下往上穿过D
     buy = (k > d) & (k.shift(1) <= d.shift(1))
+    # 死叉：K从上往下穿过D
     sell = (k < d) & (k.shift(1) >= d.shift(1))
     
     return buy, sell
@@ -237,10 +265,10 @@ STRATEGIES = {
     "SKDJ金叉/死叉": {
         "func": skdj_cross_signal,
         "params": {
-            "period": {"label": "周期", "default": 9, "min": 5, "max": 20},
-            "smooth": {"label": "平滑次数", "default": 3, "min": 1, "max": 10}
+            "n": {"label": "RSV周期(N)", "default": 9, "min": 5, "max": 30},
+            "m": {"label": "平滑周期(M)", "default": 3, "min": 2, "max": 15}
         },
-        "description": "慢速KDJ金叉买入，死叉卖出"
+        "description": "慢速KDJ金叉买入，死叉卖出。参数N为RSV计算周期，M为K/D平滑周期"
     },
     "成交量突破": {
         "func": volume_breakout_signal,
@@ -300,9 +328,9 @@ def apply_single_strategy(df, strategy_name, **params):
     return df
 
 
-def apply_multi_strategy(df, selected_strategies, params_dict, mode="all"):
+def apply_multi_strategy(df, selected_strategies, params_dict, buy_mode="any", sell_mode="any"):
     """
-    应用多策略组合
+    应用多策略组合，支持买入和卖出条件独立控制
     
     Parameters:
     -----------
@@ -312,9 +340,18 @@ def apply_multi_strategy(df, selected_strategies, params_dict, mode="all"):
         选中的策略名称列表
     params_dict : dict
         各策略的参数字典 {"策略名": {"param1": value1, ...}}
-    mode : str
-        "all": 所有策略都满足才买入
-        "any": 任一策略满足就买入
+    buy_mode : str
+        买入模式
+        "all": 所有策略都满足才买入（保守）
+        "any": 任一策略满足就买入（激进）
+    sell_mode : str
+        卖出模式
+        "all": 所有策略都满足才卖出（保守）
+        "any": 任一策略满足就卖出（激进，更及时止损）
+    
+    Returns:
+    --------
+    pd.DataFrame : 带买卖信号的DataFrame
     """
     if not selected_strategies:
         df['buy_signal'] = False
@@ -343,20 +380,28 @@ def apply_multi_strategy(df, selected_strategies, params_dict, mode="all"):
         df['sell_signal'] = False
         return df
     
-    # 组合信号
-    if mode == "all":
-        # 所有策略都满足
+    # 组合信号 - 买入条件
+    if buy_mode == "all":
+        # 所有策略都满足才买入（AND逻辑）
         combined_buy = strategy_buy_signals[0]
-        combined_sell = strategy_sell_signals[0]
         for i in range(1, len(strategy_buy_signals)):
             combined_buy = combined_buy & strategy_buy_signals[i]
-            combined_sell = combined_sell | strategy_sell_signals[i]  # 任一策略触发都卖出
     else:
-        # 任一策略满足
+        # 任一策略满足就买入（OR逻辑）
         combined_buy = strategy_buy_signals[0]
-        combined_sell = strategy_sell_signals[0]
         for i in range(1, len(strategy_buy_signals)):
             combined_buy = combined_buy | strategy_buy_signals[i]
+    
+    # 组合信号 - 卖出条件
+    if sell_mode == "all":
+        # 所有策略都满足才卖出（AND逻辑，更保守）
+        combined_sell = strategy_sell_signals[0]
+        for i in range(1, len(strategy_sell_signals)):
+            combined_sell = combined_sell & strategy_sell_signals[i]
+    else:
+        # 任一策略满足就卖出（OR逻辑，更激进，及时止损）
+        combined_sell = strategy_sell_signals[0]
+        for i in range(1, len(strategy_sell_signals)):
             combined_sell = combined_sell | strategy_sell_signals[i]
     
     df['buy_signal'] = combined_buy

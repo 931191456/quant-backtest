@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v2.0 - Streamlit主应用
+量化回测网站 v2.1 - Streamlit主应用
 支持多策略组合、基准对比、报告导出的高性能回测系统
+新增：SKDJ指标支持、参数可自定义、买卖条件独立控制
 """
 
 import streamlit as st
@@ -250,16 +251,6 @@ with st.sidebar:
     # ==================== 策略组合 ====================
     st.markdown("### 🎯 策略组合")
     
-    # 策略模式选择
-    strategy_mode = st.radio(
-        "策略组合模式",
-        ["任一满足即可买入", "全部满足才买入"],
-        index=0,
-        horizontal=True,
-        help="任一满足：任一策略发出信号就买入；全部满足：所有策略都发出信号才买入"
-    )
-    mode = "any" if "任一" in strategy_mode else "all"
-    
     # 多策略选择
     available_strategies = list(STRATEGIES.keys())
     selected_strategies = st.multiselect(
@@ -268,6 +259,34 @@ with st.sidebar:
         default=["MACD金叉/死叉"],
         help="选择多个策略进行组合"
     )
+    
+    # 策略组合条件设置（仅在多策略时显示）
+    if len(selected_strategies) > 1:
+        st.markdown("**📌 组合条件设置**")
+        
+        col_buy, col_sell = st.columns(2)
+        with col_buy:
+            buy_mode = st.radio(
+                "买入条件",
+                ["激进（任一金叉即买）", "保守（全部金叉才买）"],
+                index=0,
+                horizontal=True,
+                help="激进：任一指标发出买入信号就买入；保守：所有指标都发出买入信号才买入"
+            )
+            buy_mode_value = "any" if "激进" in buy_mode else "all"
+        
+        with col_sell:
+            sell_mode = st.radio(
+                "卖出条件",
+                ["激进（任一死叉即卖）", "保守（全部死叉才卖）"],
+                index=0,
+                horizontal=True,
+                help="激进：任一指标发出卖出信号就卖出（更及时止损）；保守：所有指标都发出卖出信号才卖出"
+            )
+            sell_mode_value = "any" if "激进" in sell_mode else "all"
+    else:
+        buy_mode_value = "any"
+        sell_mode_value = "any"
     
     # 各策略参数
     strategy_params = {}
@@ -292,6 +311,19 @@ with st.sidebar:
                 if strat_name not in strategy_params:
                     strategy_params[strat_name] = {}
                 strategy_params[strat_name][param_key] = value
+    
+    # 组合条件说明
+    if len(selected_strategies) > 1:
+        with st.expander("💡 组合条件说明", expanded=False):
+            st.markdown("""
+            **激进买入**：任一指标发出金叉信号就买入，交易机会多但可能假信号多
+            
+            **保守买入**：所有指标都发出金叉信号才买入，信号更可靠但可能错过时机
+            
+            **激进卖出**：任一指标发出死叉信号就卖出，及时止损但可能卖得太早
+            
+            **保守卖出**：所有指标都发出死叉信号才卖出，持有更久但可能利润回吐
+            """)
     
     st.markdown("---")
     
@@ -400,7 +432,7 @@ if run_backtest:
             
             # 步骤3：应用策略
             status_text.text("🎯 正在计算策略信号...")
-            df = apply_multi_strategy(df, selected_strategies, strategy_params, mode)
+            df = apply_multi_strategy(df, selected_strategies, strategy_params, buy_mode=buy_mode_value, sell_mode=sell_mode_value)
             
             progress_bar.progress(70)
             status_text.text("⚙️ 策略计算完成")
