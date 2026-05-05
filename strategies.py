@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-策略引擎模块
-实现各种技术指标和交易策略
+策略引擎模块 v2.0
+支持多策略组合计算
 """
 
 import pandas as pd
@@ -11,121 +11,42 @@ import numpy as np
 # ==================== 基础技术指标计算 ====================
 
 def calculate_ma(df, periods=[5, 10, 20, 60]):
-    """
-    计算简单移动平均线
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    periods : list
-        周期列表
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了MA列的数据
-    """
+    """计算简单移动平均线"""
     for period in periods:
         df[f'ma{period}'] = df['close'].rolling(window=period).mean()
     return df
 
 
 def calculate_ema(df, periods=[12, 26]):
-    """
-    计算指数移动平均线
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    periods : list
-        周期列表
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了EMA列的数据
-    """
+    """计算指数移动平均线"""
     for period in periods:
         df[f'ema{period}'] = df['close'].ewm(span=period, adjust=False).mean()
     return df
 
 
 def calculate_macd(df, fast=12, slow=26, signal=9):
-    """
-    计算MACD指标
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    fast : int
-        快线周期
-    slow : int
-        慢线周期
-    signal : int
-        信号线周期
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了macd、macd_signal、macd_hist列的数据
-    """
+    """计算MACD指标"""
     df['ema_fast'] = df['close'].ewm(span=fast, adjust=False).mean()
     df['ema_slow'] = df['close'].ewm(span=slow, adjust=False).mean()
     df['macd'] = df['ema_fast'] - df['ema_slow']
     df['macd_signal'] = df['macd'].ewm(span=signal, adjust=False).mean()
     df['macd_hist'] = df['macd'] - df['macd_signal']
-    
-    # 删除中间列
     df.drop(['ema_fast', 'ema_slow'], axis=1, inplace=True)
     return df
 
 
 def calculate_rsi(df, period=14):
-    """
-    计算RSI指标
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    period : int
-        RSI周期
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了rsi列的数据
-    """
+    """计算RSI指标"""
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
     return df
 
 
 def calculate_bollinger_bands(df, period=20, std_dev=2):
-    """
-    计算布林带
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    period : int
-        周期
-    std_dev : float
-        标准差倍数
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了bb_upper、bb_middle、bb_lower列的数据
-    """
+    """计算布林带"""
     df['bb_middle'] = df['close'].rolling(window=period).mean()
     df['bb_std'] = df['close'].rolling(window=period).std()
     df['bb_upper'] = df['bb_middle'] + std_dev * df['bb_std']
@@ -135,419 +56,328 @@ def calculate_bollinger_bands(df, period=20, std_dev=2):
 
 
 def calculate_kdj(df, n=9, m1=3, m2=3):
-    """
-    计算KDJ指标
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含高、低、收盘价的数据
-    n : int
-        RSV周期
-    m1 : int
-        K值平滑周期
-    m2 : int
-        D值平滑周期
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了kdj_k、kdj_d、kdj_j列的数据
-    """
+    """计算KDJ指标"""
     low_n = df['low'].rolling(window=n, min_periods=1).min()
     high_n = df['high'].rolling(window=n, min_periods=1).max()
-    
     rsv = (df['close'] - low_n) / (high_n - low_n) * 100
     rsv = rsv.fillna(50)
-    
     df['kdj_k'] = rsv.ewm(com=m1-1, adjust=False).mean()
     df['kdj_d'] = df['kdj_k'].ewm(com=m2-1, adjust=False).mean()
     df['kdj_j'] = 3 * df['kdj_k'] - 2 * df['kdj_d']
     return df
 
 
+def calculate_skdj(df, period=9, smooth=3):
+    """计算SKDJ（慢速随机指标）"""
+    low_n = df['low'].rolling(window=period, min_periods=1).min()
+    high_n = df['high'].rolling(window=period, min_periods=1).max()
+    rsv = (df['close'] - low_n) / (high_n - low_n) * 100
+    rsv = rsv.fillna(50)
+    df['skdj_k'] = rsv.rolling(window=smooth, min_periods=1).mean()
+    df['skdj_d'] = df['skdj_k'].rolling(window=smooth, min_periods=1).mean()
+    return df
+
+
 def calculate_volume_ma(df, periods=[5, 10, 20]):
-    """
-    计算成交量移动平均线
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含成交量数据
-    periods : list
-        周期列表
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了vol_ma列的数据
-    """
+    """计算成交量移动平均线"""
     for period in periods:
         df[f'vol_ma{period}'] = df['volume'].rolling(window=period).mean()
     return df
 
 
-# ==================== 策略信号生成 ====================
+# ==================== 单一策略信号生成 ====================
 
 def ma_cross_signal(df, short_period=5, long_period=20):
-    """
-    均线交叉策略
-    金叉买入，死叉卖出
+    """双均线交叉策略"""
+    if f'ma{short_period}' not in df.columns or f'ma{long_period}' not in df.columns:
+        df = calculate_ma(df, [short_period, long_period])
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    short_period : int
-        短期均线周期
-    long_period : int
-        长期均线周期
+    ma_short = df[f'ma{short_period}']
+    ma_long = df[f'ma{long_period}']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列(1买入, -1卖出, 0观望)
-    """
-    df = calculate_ma(df.copy(), periods=[short_period, long_period])
-    df['signal'] = 0
+    # 金叉（买入）：短期均线上穿长期均线
+    buy = (ma_short > ma_long) & (ma_short.shift(1) <= ma_long.shift(1))
+    # 死叉（卖出）：短期均线下穿长期均线
+    sell = (ma_short < ma_long) & (ma_short.shift(1) >= ma_long.shift(1))
     
-    short_ma = f'ma{short_period}'
-    long_ma = f'ma{long_period}'
-    
-    # 金叉：短期均线上穿长期均线
-    golden_cross = (df[short_ma] > df[long_ma]) & (df[short_ma].shift(1) <= df[long_ma].shift(1))
-    # 死叉：短期均线下穿长期均线
-    dead_cross = (df[short_ma] < df[long_ma]) & (df[short_ma].shift(1) >= df[long_ma].shift(1))
-    
-    df.loc[golden_cross, 'signal'] = 1  # 买入信号
-    df.loc[dead_cross, 'signal'] = -1   # 卖出信号
-    
-    return df
+    return buy, sell
 
 
-def macd_signal_strategy(df, fast=12, slow=26, signal=9):
-    """
-    MACD策略
-    MACD金叉买入，死叉卖出
+def macd_cross_signal(df, fast=12, slow=26, signal=9):
+    """MACD金叉死叉策略"""
+    if 'macd' not in df.columns:
+        df = calculate_macd(df, fast, slow, signal)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    fast : int
-        快线周期
-    slow : int
-        慢线周期
-    signal : int
-        信号线周期
+    macd = df['macd']
+    macd_signal = df['macd_signal']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_macd(df.copy(), fast, slow, signal)
-    df['signal'] = 0
+    buy = (macd > macd_signal) & (macd.shift(1) <= macd_signal.shift(1))
+    sell = (macd < macd_signal) & (macd.shift(1) >= macd_signal.shift(1))
     
-    # 金叉：MACD上穿信号线
-    golden_cross = (df['macd'] > df['macd_signal']) & (df['macd'].shift(1) <= df['macd_signal'].shift(1))
-    # 死叉：MACD下穿信号线
-    dead_cross = (df['macd'] < df['macd_signal']) & (df['macd'].shift(1) >= df['macd_signal'].shift(1))
-    
-    df.loc[golden_cross, 'signal'] = 1  # 买入信号
-    df.loc[dead_cross, 'signal'] = -1   # 卖出信号
-    
-    return df
+    return buy, sell
 
 
-def rsi_signal_strategy(df, period=14, oversold=30, overbought=70):
-    """
-    RSI超买超卖策略
+def rsi_signal(df, period=14, oversold=30, overbought=70):
+    """RSI超买超卖策略"""
+    if 'rsi' not in df.columns:
+        df = calculate_rsi(df, period)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    period : int
-        RSI周期
-    oversold : float
-        超卖阈值
-    overbought : float
-        超买阈值
+    rsi = df['rsi']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_rsi(df.copy(), period)
-    df['signal'] = 0
+    buy = rsi < oversold
+    sell = rsi > overbought
     
-    # RSI从超卖区回升买入
-    buy_condition = (df['rsi'] < oversold) & (df['rsi'].shift(1) >= oversold)
-    # RSI从超买区回落卖出
-    sell_condition = (df['rsi'] > overbought) & (df['rsi'].shift(1) <= overbought)
-    
-    df.loc[buy_condition, 'signal'] = 1
-    df.loc[sell_condition, 'signal'] = -1
-    
-    return df
+    return buy, sell
 
 
-def bollinger_signal_strategy(df, period=20, std_dev=2):
-    """
-    布林带策略
-    价格触及下轨买入，触及上轨卖出
+def kdj_cross_signal(df, n=9, m1=3, m2=3):
+    """KDJ金叉死叉策略"""
+    if 'kdj_k' not in df.columns:
+        df = calculate_kdj(df, n, m1, m2)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含收盘价的数据
-    period : int
-        周期
-    std_dev : float
-        标准差倍数
+    k = df['kdj_k']
+    d = df['kdj_d']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_bollinger_bands(df.copy(), period, std_dev)
-    df['signal'] = 0
+    buy = (k > d) & (k.shift(1) <= d.shift(1))
+    sell = (k < d) & (k.shift(1) >= d.shift(1))
     
-    # 价格触及下轨买入
-    buy_condition = (df['close'] <= df['bb_lower']) & (df['close'].shift(1) > df['bb_lower'].shift(1))
-    # 价格触及上轨卖出
-    sell_condition = (df['close'] >= df['bb_upper']) & (df['close'].shift(1) < df['bb_upper'].shift(1))
-    
-    df.loc[buy_condition, 'signal'] = 1
-    df.loc[sell_condition, 'signal'] = -1
-    
-    return df
+    return buy, sell
 
 
-def kdj_signal_strategy(df, n=9, m1=3, m2=3):
-    """
-    KDJ策略
-    K值从下往上穿越D值买入，反之卖出
+def skdj_cross_signal(df, period=9, smooth=3):
+    """SKDJ金叉死叉策略"""
+    if 'skdj_k' not in df.columns:
+        df = calculate_skdj(df, period, smooth)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含高、低、收盘价的数据
-    n : int
-        RSV周期
-    m1 : int
-        K值平滑周期
-    m2 : int
-        D值平滑周期
+    k = df['skdj_k']
+    d = df['skdj_d']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_kdj(df.copy(), n, m1, m2)
-    df['signal'] = 0
+    buy = (k > d) & (k.shift(1) <= d.shift(1))
+    sell = (k < d) & (k.shift(1) >= d.shift(1))
     
-    # 金叉
-    golden_cross = (df['kdj_k'] > df['kdj_d']) & (df['kdj_k'].shift(1) <= df['kdj_d'].shift(1))
-    # 死叉
-    dead_cross = (df['kdj_k'] < df['kdj_d']) & (df['kdj_k'].shift(1) >= df['kdj_d'].shift(1))
-    
-    df.loc[golden_cross, 'signal'] = 1
-    df.loc[dead_cross, 'signal'] = -1
-    
-    return df
+    return buy, sell
 
 
-def volume_reversal_signal(df, period=20, threshold=0.5):
-    """
-    缩量反转策略
-    在放量下跌后缩量反弹时买入
+def volume_breakout_signal(df, period=20, multiplier=1.5):
+    """成交量突破策略"""
+    if f'vol_ma{period}' not in df.columns:
+        df = calculate_volume_ma(df, [period])
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含成交量数据
-    period : int
-        观察周期
-    threshold : float
-        缩量比例阈值
+    volume = df['volume']
+    vol_ma = df[f'vol_ma{period}']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_volume_ma(df.copy())
-    df['vol_ratio'] = df['volume'] / df['vol_ma20']
-    df['signal'] = 0
+    buy = volume > vol_ma * multiplier
+    sell = False  # 成交量突破不产生卖出信号
     
-    # 放量下跌（跌幅大于2%且成交量大于均量1.5倍）
-    volume_surge = (df['pct_change'] < -2) & (df['vol_ratio'] > 1.5)
-    
-    # 缩量反弹（缩量至均量以下且价格上涨）
-    volume_shrink = (df['vol_ratio'] < threshold) & (df['pct_change'] > 0)
-    
-    # 连续出现放量下跌后的缩量反弹
-    df['volume_surge_flag'] = volume_surge.astype(int)
-    df['surge_count'] = df['volume_surge_flag'].rolling(window=3, min_periods=1).sum()
-    
-    buy_condition = volume_shrink & (df['surge_count'] >= 1)
-    
-    # 价格跌破5日均线卖出
-    df = calculate_ma(df, periods=[5])
-    sell_condition = (df['close'] < df['ma5']) & (df['close'].shift(1) >= df['ma5'].shift(1))
-    
-    df.loc[buy_condition, 'signal'] = 1
-    df.loc[sell_condition, 'signal'] = -1
-    
-    df.drop(['vol_ratio', 'volume_surge_flag', 'surge_count'], axis=1, inplace=True)
-    
-    return df
+    return buy, sell
 
 
-def panic_buy_signal(df, drop_threshold=-5, volume_threshold=2):
-    """
-    恐慌抄底策略
-    在大幅下跌且放量时买入
+def bollinger_breakout_signal(df, period=20, std_dev=2):
+    """布林带突破策略"""
+    if 'bb_upper' not in df.columns:
+        df = calculate_bollinger_bands(df, period, std_dev)
     
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含成交量数据
-    drop_threshold : float
-        跌幅阈值（负数）
-    volume_threshold : float
-        放量倍数
+    close = df['close']
+    bb_upper = df['bb_upper']
+    bb_lower = df['bb_lower']
     
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列
-    """
-    df = calculate_volume_ma(df.copy())
-    df['vol_ratio'] = df['volume'] / df['vol_ma20']
-    df['signal'] = 0
+    buy = close < bb_lower  # 价格跌破下轨买入
+    sell = close > bb_upper  # 价格突破上轨卖出
     
-    # 恐慌条件：大幅下跌且放量
-    panic_condition = (df['pct_change'] < drop_threshold) & (df['vol_ratio'] > volume_threshold)
-    
-    # 买入信号
-    df.loc[panic_condition, 'signal'] = 1
-    
-    # 止盈止损出场：5日后或盈利/亏损达到阈值
-    # 这里简化为持有5天后自动卖出
-    df.drop(['vol_ratio'], axis=1, inplace=True)
-    
-    return df
+    return buy, sell
 
 
-# ==================== 策略选择映射 ====================
+def ma_arrangement_signal(df, short_period=5, long_period=60):
+    """均线多头/空头排列策略"""
+    if f'ma{short_period}' not in df.columns or f'ma{long_period}' not in df.columns:
+        df = calculate_ma(df, [short_period, 20, long_period])
+    
+    ma_short = df[f'ma{short_period}']
+    ma_mid = df['ma20']
+    ma_long = df[f'ma{long_period}']
+    
+    # 多头排列：短>中>长
+    buy = (ma_short > ma_mid) & (ma_mid > ma_long)
+    # 空头排列：短<中<长
+    sell = (ma_short < ma_mid) & (ma_mid < ma_long)
+    
+    return buy, sell
 
-STRATEGY_FUNCTIONS = {
-    "均线交叉策略": {
-        "function": ma_cross_signal,
+
+# ==================== 策略注册表 ====================
+
+STRATEGIES = {
+    "MACD金叉/死叉": {
+        "func": macd_cross_signal,
         "params": {
-            "short_period": {"type": "int", "default": 5, "min": 2, "max": 60, "label": "短期均线天数"},
-            "long_period": {"type": "int", "default": 20, "min": 5, "max": 250, "label": "长期均线天数"}
-        }
+            "fast": {"label": "快线周期", "default": 12, "min": 5, "max": 30},
+            "slow": {"label": "慢线周期", "default": 26, "min": 10, "max": 60},
+            "signal": {"label": "信号线周期", "default": 9, "min": 5, "max": 20}
+        },
+        "description": "MACD金叉买入，死叉卖出"
     },
-    "MACD策略": {
-        "function": macd_signal_strategy,
+    "RSI超买超卖": {
+        "func": rsi_signal,
         "params": {
-            "fast": {"type": "int", "default": 12, "min": 5, "max": 30, "label": "快线周期"},
-            "slow": {"type": "int", "default": 26, "min": 10, "max": 60, "label": "慢线周期"},
-            "signal": {"type": "int", "default": 9, "min": 5, "max": 20, "label": "信号线周期"}
-        }
+            "period": {"label": "RSI周期", "default": 14, "min": 5, "max": 30},
+            "oversold": {"label": "超卖阈值", "default": 30, "min": 10, "max": 40},
+            "overbought": {"label": "超买阈值", "default": 70, "min": 60, "max": 90}
+        },
+        "description": "RSI低于超卖线买入，高于超买线卖出"
     },
-    "RSI策略": {
-        "function": rsi_signal_strategy,
+    "KDJ金叉/死叉": {
+        "func": kdj_cross_signal,
         "params": {
-            "period": {"type": "int", "default": 14, "min": 5, "max": 30, "label": "RSI周期"},
-            "oversold": {"type": "float", "default": 30, "min": 10, "max": 40, "label": "超卖线"},
-            "overbought": {"type": "float", "default": 70, "min": 60, "max": 90, "label": "超买线"}
-        }
+            "n": {"label": "RSV周期", "default": 9, "min": 5, "max": 20},
+            "m1": {"label": "K值平滑", "default": 3, "min": 1, "max": 10},
+            "m2": {"label": "D值平滑", "default": 3, "min": 1, "max": 10}
+        },
+        "description": "KDJ金叉买入，死叉卖出"
     },
-    "布林带策略": {
-        "function": bollinger_signal_strategy,
+    "SKDJ金叉/死叉": {
+        "func": skdj_cross_signal,
         "params": {
-            "period": {"type": "int", "default": 20, "min": 10, "max": 60, "label": "周期"},
-            "std_dev": {"type": "float", "default": 2, "min": 1, "max": 4, "label": "标准差倍数"}
-        }
+            "period": {"label": "周期", "default": 9, "min": 5, "max": 20},
+            "smooth": {"label": "平滑次数", "default": 3, "min": 1, "max": 10}
+        },
+        "description": "慢速KDJ金叉买入，死叉卖出"
     },
-    "KDJ策略": {
-        "function": kdj_signal_strategy,
+    "成交量突破": {
+        "func": volume_breakout_signal,
         "params": {
-            "n": {"type": "int", "default": 9, "min": 5, "max": 30, "label": "K周期"}
-        }
+            "period": {"label": "均量周期", "default": 20, "min": 5, "max": 60},
+            "multiplier": {"label": "突破倍数", "default": 1.5, "min": 1.0, "max": 3.0}
+        },
+        "description": "成交量突破均量的指定倍数时买入"
     },
-    "缩量反转策略": {
-        "function": volume_reversal_signal,
+    "布林带突破": {
+        "func": bollinger_breakout_signal,
         "params": {
-            "period": {"type": "int", "default": 20, "min": 10, "max": 60, "label": "观察周期"},
-            "threshold": {"type": "float", "default": 0.5, "min": 0.2, "max": 1, "label": "缩量比例"}
-        }
+            "period": {"label": "周期", "default": 20, "min": 10, "max": 60},
+            "std_dev": {"label": "标准差倍数", "default": 2, "min": 1, "max": 3}
+        },
+        "description": "价格跌破布林下轨买入，突破上轨卖出"
     },
-    "恐慌抄底策略": {
-        "function": panic_buy_signal,
+    "均线多头排列": {
+        "func": ma_arrangement_signal,
         "params": {
-            "drop_threshold": {"type": "float", "default": -5, "min": -15, "max": -2, "label": "跌幅阈值(%)"},
-            "volume_threshold": {"type": "float", "default": 2, "min": 1.5, "max": 5, "label": "放量倍数"}
-        }
+            "short_period": {"label": "短期均线", "default": 5, "min": 3, "max": 20},
+            "long_period": {"label": "长期均线", "default": 60, "min": 30, "max": 120}
+        },
+        "description": "均线多头排列买入，空头排列卖出"
+    },
+    "双均线交叉": {
+        "func": ma_cross_signal,
+        "params": {
+            "short_period": {"label": "短期均线", "default": 5, "min": 2, "max": 20},
+            "long_period": {"label": "长期均线", "default": 20, "min": 10, "max": 120}
+        },
+        "description": "短期均线上穿长期均线买入，下穿卖出"
     }
 }
 
 
-def apply_strategy(df, strategy_name, **params):
+def apply_single_strategy(df, strategy_name, **params):
     """
-    应用策略生成信号
+    应用单一策略，返回买卖信号
+    """
+    if strategy_name not in STRATEGIES:
+        raise ValueError(f"未知策略: {strategy_name}")
+    
+    strategy = STRATEGIES[strategy_name]
+    func = strategy["func"]
+    
+    # 计算所有必要的指标
+    df = calculate_all_indicators(df)
+    
+    # 调用策略函数
+    buy_signal, sell_signal = func(df, **params)
+    
+    # 标记信号
+    df['buy_signal'] = buy_signal
+    df['sell_signal'] = sell_signal
+    
+    return df
+
+
+def apply_multi_strategy(df, selected_strategies, params_dict, mode="all"):
+    """
+    应用多策略组合
     
     Parameters:
     -----------
     df : pd.DataFrame
-        原始数据
-    strategy_name : str
-        策略名称
-    **params : dict
-        策略参数
-    
-    Returns:
-    --------
-    pd.DataFrame
-        添加了signal列的数据
+        K线数据
+    selected_strategies : list
+        选中的策略名称列表
+    params_dict : dict
+        各策略的参数字典 {"策略名": {"param1": value1, ...}}
+    mode : str
+        "all": 所有策略都满足才买入
+        "any": 任一策略满足就买入
     """
-    if strategy_name not in STRATEGY_FUNCTIONS:
-        raise ValueError(f"未知策略: {strategy_name}")
+    if not selected_strategies:
+        df['buy_signal'] = False
+        df['sell_signal'] = False
+        return df
     
-    strategy = STRATEGY_FUNCTIONS[strategy_name]
-    func = strategy["function"]
+    # 计算所有指标
+    df = calculate_all_indicators(df)
     
-    # 构建参数字典
-    strategy_params = {}
-    for key, value in params.items():
-        if key in strategy["params"]:
-            strategy_params[key] = value
+    # 收集各策略的信号
+    strategy_buy_signals = []
+    strategy_sell_signals = []
     
-    return func(df, **strategy_params)
+    for strategy_name in selected_strategies:
+        if strategy_name not in STRATEGIES:
+            continue
+        
+        params = params_dict.get(strategy_name, {})
+        func = STRATEGIES[strategy_name]["func"]
+        buy, sell = func(df, **params)
+        strategy_buy_signals.append(buy)
+        strategy_sell_signals.append(sell)
+    
+    if not strategy_buy_signals:
+        df['buy_signal'] = False
+        df['sell_signal'] = False
+        return df
+    
+    # 组合信号
+    if mode == "all":
+        # 所有策略都满足
+        combined_buy = strategy_buy_signals[0]
+        combined_sell = strategy_sell_signals[0]
+        for i in range(1, len(strategy_buy_signals)):
+            combined_buy = combined_buy & strategy_buy_signals[i]
+            combined_sell = combined_sell | strategy_sell_signals[i]  # 任一策略触发都卖出
+    else:
+        # 任一策略满足
+        combined_buy = strategy_buy_signals[0]
+        combined_sell = strategy_sell_signals[0]
+        for i in range(1, len(strategy_buy_signals)):
+            combined_buy = combined_buy | strategy_buy_signals[i]
+            combined_sell = combined_sell | strategy_sell_signals[i]
+    
+    df['buy_signal'] = combined_buy
+    df['sell_signal'] = combined_sell
+    
+    return df
 
 
-def get_strategy_params(strategy_name):
-    """
-    获取策略参数定义
-    
-    Parameters:
-    -----------
-    strategy_name : str
-        策略名称
-    
-    Returns:
-    --------
-    dict
-        参数定义字典
-    """
-    if strategy_name in STRATEGY_FUNCTIONS:
-        return STRATEGY_FUNCTIONS[strategy_name]["params"]
-    return {}
+def calculate_all_indicators(df):
+    """计算所有技术指标"""
+    df = calculate_ma(df, [5, 10, 20, 60])
+    df = calculate_macd(df)
+    df = calculate_rsi(df)
+    df = calculate_kdj(df)
+    df = calculate_skdj(df)
+    df = calculate_bollinger_bands(df)
+    df = calculate_volume_ma(df, [5, 10, 20])
+    return df
+
+
+# 兼容旧接口
+def apply_strategy(df, strategy_name, **params):
+    """兼容旧接口"""
+    return apply_single_strategy(df, strategy_name, **params)

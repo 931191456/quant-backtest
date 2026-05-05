@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-工具函数模块
-提供通用的辅助功能
+工具函数模块 v2.0
 """
 
 import pandas as pd
@@ -39,11 +38,9 @@ def validate_stock_code(code, stock_type):
     code = code.strip()
     
     if stock_type == "ETF":
-        # ETF代码通常为6位数字
         if not re.match(r'^\d{6}$', code):
             return False, "ETF代码应为6位数字"
     else:
-        # 个股代码通常为6位数字
         if not re.match(r'^\d{6}$', code):
             return False, "股票代码应为6位数字"
     
@@ -100,22 +97,19 @@ def calculate_max_drawdown(equity_curve):
     return max_drawdown * 100, peak_idx, trough_idx
 
 
-def get_benchmark_name(benchmark):
-    """获取基准名称"""
-    names = {
-        "000300": "沪深300",
-        "000016": "上证50",
-        "399006": "创业板指",
-        "000001": "上证指数"
-    }
-    return names.get(benchmark, benchmark)
+# 常用指数代码映射
+INDEX_MAP = {
+    "沪深300": "000300",
+    "上证50": "000016",
+    "创业板指": "399006",
+    "中证500": "000905",
+    "上证指数": "000001",
+    "深证成指": "399001"
+}
 
 
-def parse_adjust_param(adjust):
-    """解析复权参数"""
-    adjust_map = {
-        "前复权": "qfq",
-        "后复权": "hfq",
-        "不复权": None
-    }
-    return adjust_map.get(adjust, "qfq")
+def get_index_code(name_or_code):
+    """获取指数代码"""
+    if name_or_code in INDEX_MAP:
+        return INDEX_MAP[name_or_code]
+    return name_or_code
