@@ -12,15 +12,40 @@ import time
 import traceback
 import os
 
-# 导入自定义模块
-from data_fetcher import (
-    fetch_data, get_stock_name, fetch_index_data,
-    search_all, ALL_ITEMS, BUILTIN_STOCKS, BUILTIN_ETFS, BUILTIN_INDICES,
-    DataFetchError, DataNotFoundError, DataSuspendedError, DATA_DIR
-)
-from strategies import STRATEGIES, apply_multi_strategy, get_strategy_description
-from backtest import BacktestEngine
-from utils import format_money, format_percent, INDEX_MAP, get_benchmark_options_with_industry, match_industry_etf
+# 导入自定义模块（带详细错误报告）
+try:
+    from data_fetcher import (
+        fetch_data, get_stock_name, fetch_index_data,
+        search_all, ALL_ITEMS, BUILTIN_STOCKS, BUILTIN_ETFS, BUILTIN_INDICES,
+        DataFetchError, DataNotFoundError, DataSuspendedError, DATA_DIR
+    )
+except ImportError as e:
+    st.error(f"data_fetcher导入失败: {e}")
+    st.stop()
+
+try:
+    from strategies import STRATEGIES, apply_multi_strategy
+except ImportError as e:
+    st.error(f"strategies基础导入失败: {e}")
+    st.stop()
+
+try:
+    from strategies import get_strategy_description
+except ImportError:
+    get_strategy_description = None
+
+try:
+    from backtest import BacktestEngine
+except ImportError as e:
+    st.error(f"backtest导入失败: {e}")
+    st.stop()
+
+try:
+    from utils import format_money, format_percent, INDEX_MAP, get_benchmark_options_with_industry, match_industry_etf
+except ImportError as e:
+    from utils import format_money, format_percent, INDEX_MAP
+    get_benchmark_options_with_industry = None
+    match_industry_etf = None
 
 
 # ==================== 页面配置 ====================
@@ -207,7 +232,7 @@ with st.sidebar:
     item_type = st.session_state.selected_type
     
     # 行业标签显示
-    industry_etf = match_industry_etf(name)
+    industry_etf = match_industry_etf(name) if match_industry_etf else None
     if industry_etf:
         industry_info = f'<span class="industry-tag">🏭 {industry_etf["name"]}</span>'
     else:
@@ -335,7 +360,10 @@ with st.sidebar:
     st.markdown("### 📈 基准")
     
     # 获取基准选项（自动包含行业ETF）
-    benchmark_options = get_benchmark_options_with_industry(name, code)
+    if get_benchmark_options_with_industry:
+        benchmark_options = get_benchmark_options_with_industry(name, code)
+    else:
+        benchmark_options = [{"label": f"{v} ({k})", "value": k} for k, v in INDEX_MAP.items()]
     benchmark_labels = [opt["label"] for opt in benchmark_options]
     benchmark_values = [opt["value"] for opt in benchmark_options]
     
@@ -368,13 +396,13 @@ with st.sidebar:
     with st.expander("查看所有策略说明", expanded=False):
         for strat_name in available_strategies:
             strat_info = STRATEGIES[strat_name]
-            detail = get_strategy_description(strat_name)
+            detail = get_strategy_description(strat_name) if get_strategy_description else strat_info.get('detail', None)
             
             st.markdown(f"""
             <div class="strategy-card">
                 <div class="strategy-name">📊 {strat_name}</div>
-                <div class="strategy-desc">💡 <b>原理：</b>{detail.get('原理', strat_info.get('description', '暂无说明'))}</div>
-                <div class="strategy-desc">🎯 <b>适用：</b>{detail.get('适用场景', '通用')}</div>
+                <div class="strategy-desc">💡 <b>原理：</b>{detail.get('原理', strat_info.get('description', '暂无说明')) if detail else strat_info.get('description', '暂无说明')}</div>
+                <div class="strategy-desc">🎯 <b>适用：</b>{detail.get('适用场景', '通用') if detail else '通用'}</div>
             </div>
             """, unsafe_allow_html=True)
             
