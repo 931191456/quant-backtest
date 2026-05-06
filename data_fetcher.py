@@ -4,7 +4,10 @@
 性能优化：本地parquet优先 + 自动更新 + 完善的异常处理
 """
 
-import akshare as ak
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -219,6 +222,7 @@ def _save_to_parquet(df, code):
 
 # ==================== 数据获取（完善的异常处理） ====================
 def _fetch_etf_from_akshare(symbol, start_date, end_date, adjust="qfq"):
+    if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
     """从akshare获取ETF数据"""
     try:
         df = ak.fund_etf_hist_em(
@@ -242,6 +246,7 @@ def _fetch_etf_from_akshare(symbol, start_date, end_date, adjust="qfq"):
 
 
 def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
+    if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
     """从akshare获取股票数据"""
     try:
         df = ak.stock_zh_a_hist(
@@ -267,6 +272,7 @@ def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
 
 
 def _fetch_index_from_akshare(symbol, start_date, end_date):
+    if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
     """从akshare获取指数数据"""
     try:
         df = ak.index_zh_a_hist(
