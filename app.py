@@ -586,33 +586,41 @@ if st.session_state.results is not None:
     
     with tab1:
         try:
-            chart = create_kline_chart(df)
+            buy_sigs = results.get('买入信号', [])
+            sell_sigs = results.get('卖出信号', [])
+            chart = create_kline_chart(df, buy_signals=buy_sigs, sell_signals=sell_sigs)
             st.plotly_chart(chart, use_container_width=True)
         except Exception as e:
             st.warning(f"K线图渲染失败: {e}")
     
     with tab2:
         try:
-            equity_chart = create_equity_curve(df)
-            st.plotly_chart(equity_chart, use_container_width=True)
+            equity_df = results.get('每日资产', None)
+            if equity_df is not None and len(equity_df) > 0:
+                equity_chart = create_equity_curve(equity_df, initial_capital=results.get('初始资金', 100000))
+                st.plotly_chart(equity_chart, use_container_width=True)
+            else:
+                st.info("暂无资金曲线数据")
         except Exception as e:
             st.warning(f"资金曲线渲染失败: {e}")
     
     with tab3:
         try:
-            dd_chart = create_drawdown_chart(df)
-            st.plotly_chart(dd_chart, use_container_width=True)
+            equity_df = results.get('每日资产', None)
+            if equity_df is not None and len(equity_df) > 0:
+                dd_chart = create_drawdown_chart(equity_df)
+                st.plotly_chart(dd_chart, use_container_width=True)
+            else:
+                st.info("暂无回撤数据")
         except Exception as e:
             st.warning(f"回撤图渲染失败: {e}")
     
     # 交易记录
     st.markdown("---")
     with st.expander("📜 交易记录", expanded=False):
-        trades = df[df['signal'].isin([1, -1])][['date', 'open', 'close', 'signal', 'pct_change']]
-        if len(trades) > 0:
-            trades = trades.copy()
-            trades['操作'] = trades['signal'].map({1: '买入', -1: '卖出'})
-            trades['涨跌幅'] = trades['pct_change'].apply(lambda x: f"{x:.2f}%")
-            st.dataframe(trades, use_container_width=True)
+        trade_records = results.get('交易记录', [])
+        if trade_records and len(trade_records) > 0:
+            trades_df = pd.DataFrame(trade_records)
+            st.dataframe(trades_df, use_container_width=True)
         else:
             st.info("暂无交易记录")
