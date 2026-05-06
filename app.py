@@ -111,13 +111,6 @@ st.markdown("""
         color: #9CA3AF;
         margin: 3px 0;
     }
-    .industry-tag {
-        background: #065f46;
-        color: #10B981;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-    }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stButton > button { width: 100%; }
@@ -231,12 +224,8 @@ with st.sidebar:
     name = st.session_state.selected_name
     item_type = st.session_state.selected_type
     
-    # 行业标签显示
+    # 行业ETF匹配（用于基准选择，不在首页显示）
     industry_etf = match_industry_etf(name) if match_industry_etf else None
-    if industry_etf:
-        industry_info = f'<span class="industry-tag">🏭 {industry_etf["name"]}</span>'
-    else:
-        industry_info = ""
     
     # 数据状态检查
     parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
@@ -263,7 +252,6 @@ with st.sidebar:
         <span style="font-size: 14px; color: #10B981;">📌 {name}({code})</span>
         <span style="font-size: 12px; color: #9CA3AF;">{date_hint}</span>
     </div>
-    <div style="margin-top: 5px;">{industry_info}</div>
     """, unsafe_allow_html=True)
     
     # ==================== 更新数据按钮 ====================
