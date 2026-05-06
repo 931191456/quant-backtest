@@ -75,13 +75,13 @@ BUILTIN_STOCKS = {
 BUILTIN_ETFS = {
     "510050": "上证50ETF", "510100": "纳指ETF", "510300": "沪深300ETF", "510500": "中证500ETF",
     "510900": "H股ETF", "512000": "证券ETF", "512100": "MSCI易基", "512200": "房地产ETF",
-    "512380": "银行ETF", "512480": "半导体ETF", "512660": "军工ETF", "512760": "芯片ETF",
-    "512880": "证券ETF", "513050": "中概互联ETF", "513100": "纳指ETF", "513500": "标普500ETF",
-    "513660": "港股通ETF", "515000": "科技ETF", "515050": "5GETF", "515120": "创新药ETF",
-    "515170": "食品饮料ETF", "515220": "煤炭ETF", "515980": "云计算ETF", "516020": "化工ETF",
-    "516350": "稀土ETF", "516950": "基建ETF", "518880": "黄金ETF", "159915": "创业板ETF",
-    "159901": "深证100ETF", "159919": "沪深300ETF", "159928": "中证消费ETF", "159941": "纳指ETF",
-    "159995": "芯片ETF", "588000": "科创50ETF", "588050": "科创ETF",
+    "512380": "银行ETF", "512480": "半导体ETF", "512660": "军工ETF", "512690": "酒ETF",
+    "512760": "芯片ETF", "512880": "证券ETF", "513050": "中概互联ETF", "513100": "纳指ETF",
+    "513500": "标普500ETF", "513660": "港股通ETF", "515000": "科技ETF", "515050": "5GETF",
+    "515120": "创新药ETF", "515170": "食品饮料ETF", "515220": "煤炭ETF", "515980": "云计算ETF",
+    "516020": "化工ETF", "516350": "稀土ETF", "516950": "基建ETF", "518880": "黄金ETF",
+    "159915": "创业板ETF", "159901": "深证100ETF", "159919": "沪深300ETF", "159928": "中证消费ETF",
+    "159941": "纳指ETF", "159995": "芯片ETF", "588000": "科创50ETF", "588050": "科创ETF",
 }
 
 BUILTIN_INDICES = {
@@ -161,6 +161,88 @@ def with_timeout(func):
     return wrapper
 
 
+# ==================== 东方财富API Fallback ====================
+def _fetch_from_eastmoney(symbol, start_date, end_date, stock_type="stock"):
+    """
+    从东方财富API获取K线数据作为akshare的fallback
+    
+    Parameters:
+    -----------
+    symbol : str
+        股票/ETF代码
+    start_date : str
+        开始日期，格式YYYYMMDD
+    end_date : str
+        结束日期，格式YYYYMMDD
+    stock_type : str
+        类型：stock/ETF/指数
+        
+    Returns:
+    --------
+    pd.DataFrame : 包含date, open, close, high, low, volume, amount列
+    """
+    import requests
+    
+    # 判断市场：6/5/9开头上海(1)，0/3开头深圳(0)
+    # ETF代码5开头也是上海，1开头可能是上海
+    prefix = "1" if symbol.startswith(('5', '6', '9')) else "0"
+    secid = f"{prefix}.{symbol}"
+    
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": secid,
+        "klt": "101",  # 日K
+        "fqt": "1",    # 前复权
+        "beg": start_date,
+        "end": end_date,
+        "lmt": "100000",
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57"
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://quote.eastmoney.com/"
+    }
+    
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise DataFetchError(f"东方财富API请求失败: {str(e)}", "eastmoney_request_error")
+    
+    if not data or 'data' not in data or not data['data'] or 'klines' not in data['data']:
+        raise DataFetchError("东方财富API返回空数据", "empty_response")
+    
+    klines = data['data']['klines']
+    if not klines:
+        raise DataFetchError("东方财富API返回空K线", "empty_klines")
+    
+    rows = []
+    for line in klines:
+        parts = line.split(',')
+        # 格式：日期,开盘,收盘,最高,最低,成交量,成交额
+        if len(parts) >= 6:
+            rows.append({
+                'date': parts[0],
+                'open': float(parts[1]) if parts[1] else 0,
+                'close': float(parts[2]) if parts[2] else 0,
+                'high': float(parts[3]) if parts[3] else 0,
+                'low': float(parts[4]) if parts[4] else 0,
+                'volume': float(parts[5]) if parts[5] else 0,
+                'amount': float(parts[6]) if len(parts) > 6 and parts[6] else 0
+            })
+    
+    if not rows:
+        raise DataFetchError("东方财富API数据解析失败", "parse_error")
+    
+    df = pd.DataFrame(rows)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    return df
+
+
 # ==================== 核心：本地Parquet读取 ====================
 def _read_local_parquet(code, start_date=None, end_date=None):
     """从本地parquet读取数据"""
@@ -223,7 +305,7 @@ def _save_to_parquet(df, code):
 # ==================== 数据获取（完善的异常处理） ====================
 def _fetch_etf_from_akshare(symbol, start_date, end_date, adjust="qfq"):
     if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
-    """从akshare获取ETF数据"""
+    """从akshare获取ETF数据，失败则fallback到东方财富API"""
     try:
         df = ak.fund_etf_hist_em(
             symbol=symbol, period="daily",
@@ -242,12 +324,16 @@ def _fetch_etf_from_akshare(symbol, start_date, end_date, adjust="qfq"):
         err_msg = str(e).lower()
         if '停牌' in err_msg or '无数据' in err_msg:
             raise DataSuspendedError(symbol)
-        raise DataFetchError(str(e), "akshare_error")
+        # akshare失败，fallback到东方财富API
+        try:
+            return _fetch_from_eastmoney(symbol, start_date, end_date, "ETF")
+        except DataFetchError:
+            raise DataFetchError(str(e), "akshare_error")
 
 
 def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
     if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
-    """从akshare获取股票数据"""
+    """从akshare获取股票数据，失败则fallback到东方财富API"""
     try:
         df = ak.stock_zh_a_hist(
             symbol=symbol, period="daily",
@@ -268,12 +354,16 @@ def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
             raise DataNotFoundError(symbol)
         if '停牌' in err_msg or '无数据' in err_msg:
             raise DataSuspendedError(symbol)
-        raise DataFetchError(str(e), "akshare_error")
+        # akshare失败，fallback到东方财富API
+        try:
+            return _fetch_from_eastmoney(symbol, start_date, end_date, "stock")
+        except DataFetchError:
+            raise DataFetchError(str(e), "akshare_error")
 
 
 def _fetch_index_from_akshare(symbol, start_date, end_date):
     if ak is None: raise DataFetchError("akshare未安装，请检查依赖", "no_akshare")
-    """从akshare获取指数数据"""
+    """从akshare获取指数数据，失败则fallback到东方财富API"""
     try:
         df = ak.index_zh_a_hist(
             symbol=symbol, period="daily",
@@ -292,7 +382,11 @@ def _fetch_index_from_akshare(symbol, start_date, end_date):
         err_msg = str(e).lower()
         if '不存在' in err_msg:
             raise DataNotFoundError(symbol)
-        raise DataFetchError(str(e), "akshare_error")
+        # akshare失败，fallback到东方财富API
+        try:
+            return _fetch_from_eastmoney(symbol, start_date, end_date, "指数")
+        except DataFetchError:
+            raise DataFetchError(str(e), "akshare_error")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

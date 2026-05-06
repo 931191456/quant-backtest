@@ -266,6 +266,10 @@ def match_industry_etf(stock_name):
     if not stock_name:
         return None
     
+    # ETF自身不需要匹配行业基准
+    if 'ETF' in stock_name.upper():
+        return None
+    
     stock_name_upper = stock_name.upper()
     
     # 遍历映射表，匹配关键词

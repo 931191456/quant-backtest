@@ -123,10 +123,11 @@ if 'results' not in st.session_state:
     st.session_state.results = None
 if 'data' not in st.session_state:
     st.session_state.data = None
+# 不设置默认标的，用户搜索后才会选中
 if 'selected_code' not in st.session_state:
-    st.session_state.selected_code = "000001"
+    st.session_state.selected_code = None
 if 'selected_name' not in st.session_state:
-    st.session_state.selected_name = "平安银行"
+    st.session_state.selected_name = None
 if 'selected_type' not in st.session_state:
     st.session_state.selected_type = "股票"
 if 'data_updated' not in st.session_state:
@@ -137,39 +138,25 @@ if 'update_message' not in st.session_state:
 
 # ==================== 数据更新函数 ====================
 def update_stock_data(code, item_type):
-    """在线更新单个标的的数据"""
-    import akshare as ak
-    
+    """在线更新单个标的的数据，使用data_fetcher的fetch_data（已有东方财富API fallback）"""
     parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
     START_DATE = "20240501"
     END_DATE = datetime.now().strftime("%Y%m%d")
     
     try:
+        # 确定标的类型
         if item_type == "ETF":
-            df = ak.fund_etf_hist_em(
-                symbol=code, period="daily",
-                start_date=START_DATE, end_date=END_DATE, adjust="qfq"
-            )
+            stock_type_en = "ETF"
         elif item_type == "指数":
-            df = ak.index_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=START_DATE, end_date=END_DATE
-            )
+            stock_type_en = "指数"
         else:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=START_DATE, end_date=END_DATE, adjust="qfq"
-            )
+            stock_type_en = "stock"
         
-        # 统一列名
-        df = df.rename(columns={
-            '日期': 'date', '开盘': 'open', '收盘': 'close',
-            '最高': 'high', '最低': 'low', '成交量': 'volume',
-            '成交额': 'amount', '涨跌幅': 'pct_change',
-            '涨跌额': 'change', '换手率': 'turnover'
-        })
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
+        # 使用data_fetcher的fetch_data，自动有东方财富API fallback
+        df = fetch_data(code, START_DATE, END_DATE, stock_type_en)
+        
+        if df is None or len(df) == 0:
+            return False, f"❌ 未获取到 {code} 的数据"
         
         # 保存到本地
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -181,6 +168,8 @@ def update_stock_data(code, item_type):
         return False, f"❌ 未找到 {code}，请检查代码是否正确"
     except DataSuspendedError:
         return False, f"⚠️ {code} 当前停牌或无数据"
+    except DataFetchError as e:
+        return False, f"❌ 更新失败: {e.message}"
     except Exception as e:
         return False, f"❌ 更新失败: {str(e)[:50]}"
 
@@ -196,7 +185,7 @@ with st.sidebar:
     # 搜索输入框
     search_keyword = st.text_input(
         "输入代码或名称",
-        placeholder="如：茅台、600519、平安",
+        placeholder="输入代码或名称搜索，如：茅台、512690",
         label_visibility="collapsed",
         key="search_input"
     )
@@ -248,40 +237,46 @@ with st.sidebar:
         st.session_state.selected_type = selected_info['type']
         st.session_state.update_message = None
     
-    # 显示当前选中
+    # 检查是否已选择标的
     code = st.session_state.selected_code
     name = st.session_state.selected_name
     item_type = st.session_state.selected_type
+    has_selection = code is not None and name is not None
     
     # 行业ETF匹配（用于基准选择，不在首页显示）
-    industry_etf = match_industry_etf(name) if match_industry_etf else None
+    industry_etf = match_industry_etf(name) if (match_industry_etf and has_selection) else None
     
-    # 数据状态检查
-    parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
-    has_local = os.path.exists(parquet_path)
-    if has_local:
-        try:
-            local_df = pd.read_parquet(parquet_path)
-            last_date = pd.to_datetime(local_df['date']).max().strftime('%Y-%m-%d')
-            days_ago = (datetime.now() - pd.to_datetime(local_df['date']).max()).days
-            if days_ago == 0:
-                date_hint = "📅 今天"
-            elif days_ago == 1:
-                date_hint = f"📅 昨天({last_date})"
-            else:
-                date_hint = f"📅 {last_date}({days_ago}天前)"
-        except:
-            date_hint = "📁 本地数据"
+    # 只有选择了标的才显示以下内容
+    if has_selection:
+        # 数据状态检查
+        parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
+        has_local = os.path.exists(parquet_path)
+        if has_local:
+            try:
+                local_df = pd.read_parquet(parquet_path)
+                last_date = pd.to_datetime(local_df['date']).max().strftime('%Y-%m-%d')
+                days_ago = (datetime.now() - pd.to_datetime(local_df['date']).max()).days
+                if days_ago == 0:
+                    date_hint = "📅 今天"
+                elif days_ago == 1:
+                    date_hint = f"📅 昨天({last_date})"
+                else:
+                    date_hint = f"📅 {last_date}({days_ago}天前)"
+            except:
+                date_hint = "📁 本地数据"
+        else:
+            date_hint = "🌐 在线获取"
+        
+        # 数据显示状态
+        st.markdown(f"""
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+            <span style="font-size: 14px; color: #10B981;">📌 {name}({code})</span>
+            <span style="font-size: 12px; color: #9CA3AF;">{date_hint}</span>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        date_hint = "🌐 在线获取"
-    
-    # 数据显示状态
-    st.markdown(f"""
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-        <span style="font-size: 14px; color: #10B981;">📌 {name}({code})</span>
-        <span style="font-size: 12px; color: #9CA3AF;">{date_hint}</span>
-    </div>
-    """, unsafe_allow_html=True)
+        # 未选择标的时的提示
+        st.info("🔍 请在上方搜索框输入代码或名称，选择标的后即可进行回测")
     
     # ==================== 更新数据按钮 ====================
     st.markdown("### 🔄 数据更新")
@@ -446,26 +441,34 @@ with st.sidebar:
 # ==================== 主内容区 ====================
 st.markdown('<div class="main-title">📈 量化回测系统 v3.4</div>', unsafe_allow_html=True)
 
-# 当前标的信息
+# 当前标的信息（只有选择了标的才显示）
 code = st.session_state.selected_code
 name = st.session_state.selected_name
 item_type = st.session_state.selected_type
+has_selection = code is not None and name is not None
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("当前标的", name)
-with col2:
-    st.metric("代码", code)
-with col3:
-    st.metric("类型", item_type)
-
-# 提示信息
-st.info("💡 **使用提示**：热门股票秒开体验！如需最新行情，先点侧边栏「🔄 更新数据」按钮")
+if has_selection:
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("当前标的", name)
+    with col2:
+        st.metric("代码", code)
+    with col3:
+        st.metric("类型", item_type)
+    
+    # 提示信息
+    st.info("💡 **使用提示**：热门股票秒开体验！如需最新行情，先点侧边栏「🔄 更新数据」按钮")
+else:
+    # 未选择标的时显示欢迎提示
+    st.info("👋 **欢迎使用量化回测系统**！请在左侧搜索框输入股票代码或名称开始回测")
 
 
 # ==================== 回测执行 ====================
 if run_backtest:
-    if not selected_strategies:
+    # 检查是否已选择标的
+    if not has_selection:
+        st.error("⚠️ 请先搜索并选择标的！")
+    elif not selected_strategies:
         st.error("⚠️ 请至少选择一个策略！")
     else:
         progress_container = st.container()
