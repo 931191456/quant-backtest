@@ -103,28 +103,36 @@ for code, name in BUILTIN_INDICES.items():
 
 
 def _query_stock_info_online(code):
-    """通过东方财富API在线查询股票/ETF信息"""
+    """通过东方财富搜索API在线查询股票/ETF信息"""
     import requests
-    # 判断市场
-    prefix = "1" if code.startswith(('5', '6', '9')) else "0"
-    secid = f"{prefix}.{code}"
-    url = "https://push2.eastmoney.com/api/qt/stock/get"
+    url = "https://searchapi.eastmoney.com/api/suggest/get"
     params = {
-        "secid": secid,
-        "fields": "f57,f58,f62"  # 代码、名称、类型
+        "input": code,
+        "type": "14",
+        "token": "D43BF722C8E33BDC906FB84D85E326E8",
+        "count": "5"
     }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://quote.eastmoney.com/"
+        "Referer": "https://data.eastmoney.com/"
     }
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=5)
         data = resp.json()
-        if data and 'data' in data and data['data']:
-            name = data['data'].get('f58', '')
-            # f62: 1=沪A, 0=深A, 判断类型
-            stock_type = "ETF" if 'ETF' in name.upper() or code.startswith(('51', '15', '16')) else "股票"
-            return {"code": code, "name": name, "type": stock_type}
+        if data and 'QuotationCodeTable' in data and 'Data' in data['QuotationCodeTable']:
+            items = data['QuotationCodeTable']['Data']
+            for item in items:
+                if item.get('Code') == code or item.get('UnifiedCode') == code:
+                    name = item.get('Name', '')
+                    security_type = item.get('SecurityTypeName', '')
+                    # 判断类型
+                    if 'ETF' in name.upper() or '基金' in security_type:
+                        stock_type = "ETF"
+                    elif '指数' in security_type or 'Index' in security_type:
+                        stock_type = "指数"
+                    else:
+                        stock_type = "股票"
+                    return {"code": code, "name": name, "type": stock_type}
     except:
         pass
     return None
@@ -147,11 +155,38 @@ def search_all(keyword, limit=20):
             if len(results) >= limit:
                 break
     
-    # 如果内置字典没结果，且keyword像代码（纯数字4-6位），尝试在线查询
-    if not results and keyword.isdigit() and 4 <= len(keyword) <= 6:
+    # 如果内置字典没结果，尝试在线查询
+    if not results:
         online_result = _query_stock_info_online(keyword)
         if online_result:
             results.append(online_result)
+        # 也搜索在线匹配的其他结果
+        try:
+            import requests as _req
+            url = "https://searchapi.eastmoney.com/api/suggest/get"
+            params = {"input": keyword, "type": "14", "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": str(limit)}
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}
+            resp = _req.get(url, params=params, headers=headers, timeout=5)
+            data = resp.json()
+            if data and 'QuotationCodeTable' in data and 'Data' in data['QuotationCodeTable']:
+                existing_codes = {r['code'] for r in results}
+                for item in data['QuotationCodeTable']['Data']:
+                    code = item.get('UnifiedCode') or item.get('Code', '')
+                    name = item.get('Name', '')
+                    if code and code not in existing_codes:
+                        security_type = item.get('SecurityTypeName', '')
+                        if 'ETF' in name.upper() or '基金' in security_type:
+                            item_type = "ETF"
+                        elif '指数' in security_type:
+                            item_type = "指数"
+                        else:
+                            item_type = "股票"
+                        results.append({"code": code, "name": name, "type": item_type})
+                        existing_codes.add(code)
+                        if len(results) >= limit:
+                            break
+        except:
+            pass
     
     return results
 
