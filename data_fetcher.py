@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-数据获取模块 v3.1
-性能优化：本地parquet优先 + 自动更新 + 完善的异常处理
+数据获取模块 v4.0
+全市场覆盖：搜索统一走东方财富在线API，支持全市场股票/ETF/指数
+内置字典仅用于首页热门推荐展示
 """
 
 try:
@@ -138,57 +139,65 @@ def _query_stock_info_online(code):
     return None
 
 
-def search_all(keyword, limit=20):
-    """统一搜索，内置字典优先，找不到则在线查询"""
-    if not keyword:
+def _get_item_type(name, security_type):
+    """根据名称和安全类型判断标的类型"""
+    if 'ETF' in name.upper() or '基金' in security_type or 'LOF' in name.upper():
+        return "ETF"
+    elif '指数' in security_type or 'Index' in security_type:
+        return "指数"
+    else:
+        return "股票"
+
+
+def search_all(keyword, limit=10):
+    """
+    统一搜索：全量走东方财富在线API搜索
+    内置字典不再用于搜索结果，仅用于首页热门推荐
+    支持中文名称、代码、拼音首字母搜索
+    """
+    if not keyword or len(keyword.strip()) == 0:
         return []
     
-    keyword = keyword.upper().strip()
-    results = []
+    keyword = keyword.strip()
     
-    # 先从内置字典搜索
-    for code, info in ALL_ITEMS.items():
-        name = info["name"]
-        item_type = info["type"]
-        if keyword in str(code) or keyword.upper() in name.upper():
-            results.append({"code": code, "name": name, "type": item_type})
-            if len(results) >= limit:
-                break
-    
-    # 如果内置字典没结果，尝试在线查询
-    if not results:
-        online_result = _query_stock_info_online(keyword)
-        if online_result:
-            results.append(online_result)
-        # 也搜索在线匹配的其他结果
-        try:
-            import requests as _req
-            url = "https://searchapi.eastmoney.com/api/suggest/get"
-            params = {"input": keyword, "type": "14", "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": str(limit)}
-            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}
-            resp = _req.get(url, params=params, headers=headers, timeout=5)
-            data = resp.json()
-            if data and 'QuotationCodeTable' in data and 'Data' in data['QuotationCodeTable']:
-                existing_codes = {r['code'] for r in results}
-                for item in data['QuotationCodeTable']['Data']:
-                    code = item.get('UnifiedCode') or item.get('Code', '')
-                    name = item.get('Name', '')
-                    if code and code not in existing_codes:
-                        security_type = item.get('SecurityTypeName', '')
-                        if 'ETF' in name.upper() or '基金' in security_type:
-                            item_type = "ETF"
-                        elif '指数' in security_type:
-                            item_type = "指数"
-                        else:
-                            item_type = "股票"
-                        results.append({"code": code, "name": name, "type": item_type})
-                        existing_codes.add(code)
-                        if len(results) >= limit:
-                            break
-        except:
-            pass
-    
-    return results
+    try:
+        import requests
+        url = "https://searchapi.eastmoney.com/api/suggest/get"
+        params = {
+            "input": keyword,
+            "type": "14",
+            "token": "D43BF722C8E33BDC906FB84D85E326E8",
+            "count": str(limit)
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://data.eastmoney.com/"
+        }
+        
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        data = resp.json()
+        
+        results = []
+        if data and 'QuotationCodeTable' in data and 'Data' in data['QuotationCodeTable']:
+            for item in data['QuotationCodeTable']['Data']:
+                code = item.get('UnifiedCode') or item.get('Code', '')
+                name = item.get('Name', '')
+                security_type = item.get('SecurityTypeName', '')
+                
+                if code and name:
+                    item_type = _get_item_type(name, security_type)
+                    results.append({
+                        "code": code,
+                        "name": name,
+                        "type": item_type
+                    })
+        
+        return results
+        
+    except Exception as e:
+        # 搜索失败时返回空列表，不影响用户使用
+        print(f"搜索API错误: {e}")
+        return []
 
 
 # ==================== 异常错误类 ====================

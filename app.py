@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v3.5
-修复：K线图渲染 + 去掉快速入口 + 行业ETF基准 + A股颜色规范 + 策略说明
+量化回测网站 v4.0
+全市场覆盖：搜索统一走东方财富在线API，支持全市场股票/ETF/指数实时搜索
 """
 
 import streamlit as st
@@ -50,7 +50,7 @@ except ImportError as e:
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v3.5",
+    page_title="量化回测系统 v4.0",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -176,7 +176,7 @@ def update_stock_data(code, item_type):
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v3.5")
+    st.markdown("## 📊 量化回测系统 v4.0")
     st.markdown("---")
     
     # ==================== 搜索标的（支持中文和代码搜索）====================
