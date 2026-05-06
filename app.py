@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v3.2 - Streamlit主应用
-性能优化：本地parquet秒开 + 统一搜索 + 更新按钮 + 完善的异常处理
+量化回测网站 v3.4
+修复：K线图渲染 + 去掉快速入口 + 行业ETF基准 + A股颜色规范 + 策略说明
 """
 
 import streamlit as st
@@ -18,20 +18,20 @@ from data_fetcher import (
     search_all, ALL_ITEMS, BUILTIN_STOCKS, BUILTIN_ETFS, BUILTIN_INDICES,
     DataFetchError, DataNotFoundError, DataSuspendedError, DATA_DIR
 )
-from strategies import STRATEGIES, apply_multi_strategy
+from strategies import STRATEGIES, apply_multi_strategy, get_strategy_description
 from backtest import BacktestEngine
-from utils import format_money, format_percent, INDEX_MAP
+from utils import format_money, format_percent, INDEX_MAP, get_benchmark_options_with_industry, match_industry_etf
 
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v3.2",
+    page_title="量化回测系统 v3.4",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 自定义CSS
+# 自定义CSS - A股颜色规范
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; }
@@ -43,9 +43,11 @@ st.markdown("""
         margin: 10px 0;
         text-align: center;
     }
+    /* A股颜色规范：正收益红色，负收益绿色 */
     .metric-value { font-size: 28px; font-weight: bold; color: #F9FAFB; }
-    .metric-value.positive { color: #10B981; }
-    .metric-value.negative { color: #EF4444; }
+    .metric-value.positive { color: #EF4444; }  /* 正收益红色 */
+    .metric-value.negative { color: #10B981; }  /* 负收益绿色 */
+    .metric-value.drawdown { color: #10B981; }   /* 回撤用绿色（亏损概念） */
     .main-title { font-size: 32px; font-weight: bold; color: #F9FAFB; text-align: center; padding: 20px 0; }
     .info-box {
         background: #1f2937;
@@ -60,6 +62,36 @@ st.markdown("""
         border-radius: 8px;
         padding: 10px;
         margin: 10px 0;
+    }
+    .strategy-card {
+        background: #1f2937;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 15px;
+        margin: 8px 0;
+    }
+    .strategy-name {
+        font-size: 16px;
+        font-weight: bold;
+        color: #60A5FA;
+        margin-bottom: 8px;
+    }
+    .strategy-desc {
+        font-size: 13px;
+        color: #D1D5DB;
+        margin-bottom: 5px;
+    }
+    .strategy-param {
+        font-size: 12px;
+        color: #9CA3AF;
+        margin: 3px 0;
+    }
+    .industry-tag {
+        background: #065f46;
+        color: #10B981;
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-size: 12px;
     }
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -137,45 +169,10 @@ def update_stock_data(code, item_type):
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v3.2")
+    st.markdown("## 📊 量化回测系统 v3.4")
     st.markdown("---")
     
-    # ==================== 热门快速入口 ====================
-    st.markdown("### ⚡ 快速入口")
-    
-    hot_items = [
-        ("600519", "贵州茅台"),
-        ("000858", "五粮液"),
-        ("600036", "招商银行"),
-        ("601318", "中国平安"),
-        ("300750", "宁德时代"),
-        ("000001", "平安银行"),
-        ("510300", "沪深300ETF"),
-        ("159915", "创业板ETF"),
-        ("000001", "上证指数"),
-    ]
-    
-    cols = st.columns(3)
-    for i, (code, name) in enumerate(hot_items[:9]):
-        with cols[i % 3]:
-            info = ALL_ITEMS.get(code, {"name": name, "type": "股票"})
-            display_name = info.get("name", name)
-            item_type = info.get("type", "股票")
-            
-            if st.button(
-                f"{display_name[:4]}", 
-                key=f"hot_{code}_{i}",
-                help=f"{display_name}({code})"
-            ):
-                st.session_state.selected_code = code
-                st.session_state.selected_name = display_name
-                st.session_state.selected_type = item_type
-                st.session_state.update_message = None
-                st.rerun(scope="fragment")
-    
-    st.markdown("---")
-    
-    # ==================== 统一搜索框 ====================
+    # ==================== 搜索标的（去掉了快速入口）====================
     st.markdown("### 🔍 搜索标的")
     
     search_keyword = st.text_input(
@@ -209,6 +206,13 @@ with st.sidebar:
     name = st.session_state.selected_name
     item_type = st.session_state.selected_type
     
+    # 行业标签显示
+    industry_etf = match_industry_etf(name)
+    if industry_etf:
+        industry_info = f'<span class="industry-tag">🏭 {industry_etf["name"]}</span>'
+    else:
+        industry_info = ""
+    
     # 数据状态检查
     parquet_path = os.path.join(DATA_DIR, f"{code}.parquet")
     has_local = os.path.exists(parquet_path)
@@ -230,10 +234,11 @@ with st.sidebar:
     
     # 数据显示状态
     st.markdown(f"""
-    <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
         <span style="font-size: 14px; color: #10B981;">📌 {name}({code})</span>
         <span style="font-size: 12px; color: #9CA3AF;">{date_hint}</span>
     </div>
+    <div style="margin-top: 5px;">{industry_info}</div>
     """, unsafe_allow_html=True)
     
     # ==================== 更新数据按钮 ====================
@@ -326,19 +331,25 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # ==================== 基准和风控 ====================
+    # ==================== 基准选择（带行业ETF）====================
     st.markdown("### 📈 基准")
     
+    # 获取基准选项（自动包含行业ETF）
+    benchmark_options = get_benchmark_options_with_industry(name, code)
+    benchmark_labels = [opt["label"] for opt in benchmark_options]
+    benchmark_values = [opt["value"] for opt in benchmark_options]
+    
+    # 默认选择（行业ETF优先）
+    default_benchmark_idx = 0
     benchmark_option = st.selectbox(
         "选择基准",
-        ["无基准", "沪深300", "上证50", "创业板指", "中证500"],
-        index=0
+        benchmark_labels,
+        index=default_benchmark_idx
     )
     
-    if benchmark_option == "无基准":
-        benchmark_symbol = None
-    else:
-        benchmark_symbol = INDEX_MAP.get(benchmark_option, "000300")
+    # 获取选中的基准代码
+    selected_idx = benchmark_labels.index(benchmark_option)
+    benchmark_symbol = benchmark_values[selected_idx]
     
     st.markdown("---")
     st.markdown("### 🛡️ 风控")
@@ -351,6 +362,34 @@ with st.sidebar:
     
     st.markdown("---")
     
+    # ==================== 策略说明 ====================
+    st.markdown("### 📖 策略说明")
+    
+    with st.expander("查看所有策略说明", expanded=False):
+        for strat_name in available_strategies:
+            strat_info = STRATEGIES[strat_name]
+            detail = get_strategy_description(strat_name)
+            
+            st.markdown(f"""
+            <div class="strategy-card">
+                <div class="strategy-name">📊 {strat_name}</div>
+                <div class="strategy-desc">💡 <b>原理：</b>{detail.get('原理', strat_info.get('description', '暂无说明'))}</div>
+                <div class="strategy-desc">🎯 <b>适用：</b>{detail.get('适用场景', '通用')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 参数说明
+            if detail and '参数说明' in detail:
+                params_html = "<div style='margin-top:8px;'>"
+                for pname, pdesc in detail['参数说明'].items():
+                    params_html += f"<div class='strategy-param'>• {pname}：{pdesc}</div>"
+                params_html += "</div>"
+                st.markdown(params_html, unsafe_allow_html=True)
+            
+            st.markdown("---")
+    
+    st.markdown("---")
+    
     run_backtest = st.button(
         "🚀 开始回测",
         type="primary",
@@ -360,7 +399,7 @@ with st.sidebar:
 
 
 # ==================== 主内容区 ====================
-st.markdown('<div class="main-title">📈 量化回测系统 v3.2</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📈 量化回测系统 v3.4</div>', unsafe_allow_html=True)
 
 # 当前标的信息
 code = st.session_state.selected_code
@@ -504,58 +543,69 @@ if st.session_state.results is not None:
     st.markdown("---")
     st.markdown("## 📊 回测结果")
     
-    # 核心指标
+    # 核心指标 - A股颜色规范
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         total_return = results.get('总收益率', 0)
-        color = "positive" if total_return >= 0 else "negative"
+        # A股惯例：正收益红色，负收益绿色
+        color_class = "positive" if total_return >= 0 else "negative"
+        color_hex = "#EF4444" if total_return >= 0 else "#10B981"
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">总收益率</div>
-            <div class="metric-value {color}">{total_return:+.2f}%</div>
+            <div class="metric-value {color_class}" style="color: {color_hex};">{total_return:+.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
         annual_return = results.get('年化收益率', 0)
-        color = "positive" if annual_return >= 0 else "negative"
+        color_class = "positive" if annual_return >= 0 else "negative"
+        color_hex = "#EF4444" if annual_return >= 0 else "#10B981"
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">年化收益率</div>
-            <div class="metric-value {color}">{annual_return:+.2f}%</div>
+            <div class="metric-value {color_class}" style="color: {color_hex};">{annual_return:+.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col3:
         sharpe = results.get('夏普比率', 0)
+        # 夏普比率：负数用红色，正数用绿色
+        sharpe_color = "#EF4444" if sharpe < 0 else "#10B981"
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">夏普比率</div>
-            <div class="metric-value">{sharpe:.2f}</div>
+            <div class="metric-value" style="color: {sharpe_color};">{sharpe:.2f}</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col4:
         max_drawdown = results.get('最大回撤', 0)
+        # 回撤用绿色（亏损概念）
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">最大回撤</div>
-            <div class="metric-value negative">{max_drawdown:.2f}%</div>
+            <div class="metric-value drawdown">-{max_drawdown:.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
     
-    # 超额收益
+    # 超额收益 - A股颜色规范
     if '超额收益' in results:
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("基准收益率", f"{results.get('基准收益率', 0):+.2f}%")
+            benchmark_return = results.get('基准收益率', 0)
+            bench_color = "#EF4444" if benchmark_return >= 0 else "#10B981"
+            st.metric("基准收益率", f"{benchmark_return:+.2f}%", delta_color="off")
+            # 用HTML覆盖默认颜色
+            st.markdown(f"<div style='text-align:center; color:{bench_color}; font-size:20px; font-weight:bold;'>{benchmark_return:+.2f}%</div>", unsafe_allow_html=True)
         with col2:
-            color = "normal" if results['超额收益'] >= 0 else "inverse"
-            st.metric("超额收益", f"{results['超额收益']:+.2f}%", delta_color=color)
+            excess_return = results['超额收益']
+            excess_color = "#EF4444" if excess_return >= 0 else "#10B981"
+            st.metric("超额收益", f"{excess_return:+.2f}%", delta_color="normal" if excess_return >= 0 else "inverse")
     
-    # 详细指标
-    with st.expander("📋 详细指标", expanded=False):
+    # ==================== 最终结果（默认展开）====================
+    with st.expander("📋 最终结果", expanded=True):
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("初始资金", f"¥{results['初始资金']:,.0f}")
@@ -564,7 +614,10 @@ if st.session_state.results is not None:
         with col3:
             st.metric("利润总额", f"¥{results['利润总额']:+,.2f}")
         with col4:
-            st.metric("盈亏比", f"{results.get('盈亏比', 0):.2f}")
+            profit_loss_ratio = results.get('盈亏比', 0)
+            # 盈亏比<1用绿色
+            pl_color = "normal" if profit_loss_ratio >= 1 else "inverse"
+            st.metric("盈亏比", f"{profit_loss_ratio:.2f}", delta_color=pl_color)
         
         col5, col6, col7, col8 = st.columns(4)
         with col5:
@@ -580,7 +633,7 @@ if st.session_state.results is not None:
     st.markdown("---")
     st.markdown("## 📈 图表分析")
     
-    from charts import create_kline_chart, create_equity_curve, create_drawdown_chart
+    from charts import create_kline_chart, create_equity_curve, create_drawdown_chart, create_trade_distribution
     
     tab1, tab2, tab3 = st.tabs(["📊 行情+信号", "💰 资金曲线", "📉 回撤分析"])
     
@@ -592,13 +645,23 @@ if st.session_state.results is not None:
             st.plotly_chart(chart, use_container_width=True)
         except Exception as e:
             st.warning(f"K线图渲染失败: {e}")
+            import traceback
+            with st.expander("错误详情"):
+                st.code(traceback.format_exc())
     
     with tab2:
         try:
             equity_df = results.get('每日资产', None)
             if equity_df is not None and len(equity_df) > 0:
-                equity_chart = create_equity_curve(equity_df, initial_capital=results.get('初始资金', 100000))
-                st.plotly_chart(equity_chart, use_container_width=True)
+                equity_df_indexed = equity_df.copy()
+                equity_df_indexed.index = pd.to_datetime(equity_df_indexed.index)
+                
+                benchmark_for_chart = None
+                if benchmark_df is not None:
+                    benchmark_for_chart = benchmark_df
+                
+                chart = create_equity_curve(equity_df_indexed, benchmark_df=benchmark_for_chart, initial_capital=initial_capital)
+                st.plotly_chart(chart, use_container_width=True)
             else:
                 st.info("暂无资金曲线数据")
         except Exception as e:
@@ -606,21 +669,19 @@ if st.session_state.results is not None:
     
     with tab3:
         try:
-            equity_df = results.get('每日资产', None)
             if equity_df is not None and len(equity_df) > 0:
-                dd_chart = create_drawdown_chart(equity_df)
-                st.plotly_chart(dd_chart, use_container_width=True)
+                equity_df_indexed = equity_df.copy()
+                equity_df_indexed.index = pd.to_datetime(equity_df_indexed.index)
+                chart = create_drawdown_chart(equity_df_indexed)
+                st.plotly_chart(chart, use_container_width=True)
+                
+                # 交易分布
+                trades = results.get('交易记录', [])
+                if trades:
+                    dist_chart = create_trade_distribution(trades)
+                    if dist_chart:
+                        st.plotly_chart(dist_chart, use_container_width=True)
             else:
                 st.info("暂无回撤数据")
         except Exception as e:
             st.warning(f"回撤图渲染失败: {e}")
-    
-    # 交易记录
-    st.markdown("---")
-    with st.expander("📜 交易记录", expanded=False):
-        trade_records = results.get('交易记录', [])
-        if trade_records and len(trade_records) > 0:
-            trades_df = pd.DataFrame(trade_records)
-            st.dataframe(trades_df, use_container_width=True)
-        else:
-            st.info("暂无交易记录")

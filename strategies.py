@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-策略引擎模块 v2.2
+策略引擎模块 v2.3
 支持多策略组合计算，新增SKDJ指标和参数可自定义
 核心逻辑：所有指标都看多时买入，任一指标看空时卖出
+新增策略详细说明
 """
 
 import pandas as pd
@@ -268,7 +269,16 @@ STRATEGIES = {
             "slow": {"label": "慢线周期", "default": 26, "min": 10, "max": 60},
             "signal": {"label": "信号线周期", "default": 9, "min": 5, "max": 20}
         },
-        "description": "MACD金叉买入，死叉卖出"
+        "description": "MACD金叉买入，死叉卖出",
+        "detail": {
+            "原理": "MACD由快线(DIF)、慢线(DEA)和柱状图组成。DIF上穿DEA形成金叉看多，下穿形成死叉看空。",
+            "适用场景": "趋势明显的单边行情，能有效捕捉中短期趋势转折。",
+            "参数说明": {
+                "快线周期": "短期EMA计算周期，通常12",
+                "慢线周期": "长期EMA计算周期，通常26",
+                "信号线周期": "DIF的EMA平滑周期，通常9"
+            }
+        }
     },
     "RSI超买超卖": {
         "func": rsi_signal,
@@ -277,7 +287,16 @@ STRATEGIES = {
             "oversold": {"label": "超卖阈值", "default": 30, "min": 10, "max": 40},
             "overbought": {"label": "超买阈值", "default": 70, "min": 60, "max": 90}
         },
-        "description": "RSI低于超卖线买入，高于超买线卖出"
+        "description": "RSI低于超卖线买入，高于超买线卖出",
+        "detail": {
+            "原理": "RSI衡量价格涨跌的相对强度。RSI<30表示超卖可能反弹，RSI>70表示超买可能回调。",
+            "适用场景": "震荡行情，在区间上下沿进行高抛低吸。",
+            "参数说明": {
+                "RSI周期": "计算RSI的周期，默认14天",
+                "超卖阈值": "低于此值视为超卖，默认30",
+                "超买阈值": "高于此值视为超买，默认70"
+            }
+        }
     },
     "KDJ金叉/死叉": {
         "func": kdj_cross_signal,
@@ -286,7 +305,16 @@ STRATEGIES = {
             "m1": {"label": "K值平滑", "default": 3, "min": 1, "max": 10},
             "m2": {"label": "D值平滑", "default": 3, "min": 1, "max": 10}
         },
-        "description": "KDJ金叉买入，死叉卖出"
+        "description": "KDJ金叉买入，死叉卖出",
+        "detail": {
+            "原理": "KDJ通过RSV计算K、D、J三条线。K线上穿D线为金叉(买入)，下穿为死叉(卖出)。",
+            "适用场景": "短期交易，对价格变动敏感，适合短线操作。",
+            "参数说明": {
+                "RSV周期": "计算RSV的周期，默认9",
+                "K值平滑": "K值的EMA平滑系数，默认3",
+                "D值平滑": "D值的EMA平滑系数，默认3"
+            }
+        }
     },
     "SKDJ金叉/死叉": {
         "func": skdj_cross_signal,
@@ -294,7 +322,15 @@ STRATEGIES = {
             "n": {"label": "RSV周期(N)", "default": 9, "min": 5, "max": 30},
             "m": {"label": "平滑周期(M)", "default": 3, "min": 2, "max": 15}
         },
-        "description": "慢速KDJ金叉买入，死叉卖出。参数N为RSV计算周期，M为K/D平滑周期"
+        "description": "慢速KDJ金叉买入，死叉卖出。参数N为RSV计算周期，M为K/D平滑周期",
+        "detail": {
+            "原理": "SKDJ是KDJ的慢速版本，使用简单移动平均代替指数平均，信号更稳定。K线上穿D线买入，下穿卖出。",
+            "适用场景": "需要过滤短期噪音的趋势行情，比KDJ更适合中线操作。",
+            "参数说明": {
+                "RSV周期(N)": "计算RSV的周期，默认9天",
+                "平滑周期(M)": "K和D的SMA平滑周期，默认3"
+            }
+        }
     },
     "成交量突破": {
         "func": volume_breakout_signal,
@@ -302,7 +338,15 @@ STRATEGIES = {
             "period": {"label": "均量周期", "default": 20, "min": 5, "max": 60},
             "multiplier": {"label": "突破倍数", "default": 1.5, "min": 1.0, "max": 3.0}
         },
-        "description": "成交量突破均量的指定倍数时买入"
+        "description": "成交量突破均量的指定倍数时买入",
+        "detail": {
+            "原理": "放量是趋势启动的信号。当成交量超过均量的N倍时，说明有资金主动介入。",
+            "适用场景": "捕捉突破行情，配合其他指标使用效果更佳。",
+            "参数说明": {
+                "均量周期": "计算均量的周期，默认20天",
+                "突破倍数": "放量标准，默认1.5倍均量"
+            }
+        }
     },
     "布林带突破": {
         "func": bollinger_breakout_signal,
@@ -310,7 +354,15 @@ STRATEGIES = {
             "period": {"label": "周期", "default": 20, "min": 10, "max": 60},
             "std_dev": {"label": "标准差倍数", "default": 2, "min": 1, "max": 3}
         },
-        "description": "价格跌破布林下轨买入，突破上轨卖出"
+        "description": "价格跌破布林下轨买入，突破上轨卖出",
+        "detail": {
+            "原理": "布林带由中轨(MA)和上下轨(±2σ)组成。价格触及下轨可能反弹，触及上轨可能回调。",
+            "适用场景": "震荡行情，在布林带上下轨进行高抛低吸。",
+            "参数说明": {
+                "周期": "中轨均线周期，默认20天",
+                "标准差倍数": "布林带宽度系数，默认2倍标准差"
+            }
+        }
     },
     "均线多头排列": {
         "func": ma_arrangement_signal,
@@ -318,7 +370,15 @@ STRATEGIES = {
             "short_period": {"label": "短期均线", "default": 5, "min": 3, "max": 20},
             "long_period": {"label": "长期均线", "default": 60, "min": 30, "max": 120}
         },
-        "description": "均线多头排列买入，空头排列卖出"
+        "description": "均线多头排列买入，空头排列卖出",
+        "detail": {
+            "原理": "多头排列(短>中>长)表示强势上涨趋势，空头排列表示弱势下跌趋势。",
+            "适用场景": "趋势行情，在趋势形成初期入场，顺势而为。",
+            "参数说明": {
+                "短期均线": "短期均线周期，默认5日",
+                "长期均线": "长期均线周期，默认60日"
+            }
+        }
     },
     "双均线交叉": {
         "func": ma_cross_signal,
@@ -326,9 +386,36 @@ STRATEGIES = {
             "short_period": {"label": "短期均线", "default": 5, "min": 2, "max": 20},
             "long_period": {"label": "长期均线", "default": 20, "min": 10, "max": 120}
         },
-        "description": "短期均线上穿长期均线买入，下穿卖出"
+        "description": "短期均线上穿长期均线买入，下穿卖出",
+        "detail": {
+            "原理": "均线交叉是最经典的趋势跟踪信号。金叉表示短期动量转正，死叉表示动量转负。",
+            "适用场景": "趋势行情，参数设置灵活，可根据股票特性调整。",
+            "参数说明": {
+                "短期均线": "快线周期，默认5日",
+                "长期均线": "慢线周期，默认20日"
+            }
+        }
     }
 }
+
+
+def get_strategy_description(strategy_name):
+    """
+    获取策略的详细说明
+    
+    Parameters:
+    -----------
+    strategy_name : str
+        策略名称
+        
+    Returns:
+    --------
+    dict : 包含原理、适用场景、参数说明的字典
+    """
+    if strategy_name not in STRATEGIES:
+        return None
+    
+    return STRATEGIES[strategy_name].get("detail", {})
 
 
 def apply_single_strategy(df, strategy_name, **params):

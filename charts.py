@@ -16,26 +16,36 @@ import base64
 def create_kline_chart(df, buy_signals=None, sell_signals=None, 
                        show_ma=True, show_macd=True, show_rsi=True):
     """创建K线图（带买卖点和技术指标）"""
-    # 子图配置
-    row_configs = [(1, 1, 0.6)]
-    row_heights = [0.5]
+    # 计算子图数量和配置
+    # row号必须从1开始连续递增
+    row_configs = []
     
+    # 第1个子图：K线（固定）
+    row_configs.append((1, 1, 0.5))  # row=1
+    
+    # 第2个子图：MACD（可选）
     if show_macd:
-        row_configs.append((2, 2, 0.2))
-        row_heights.append(0.2)
+        row_configs.append((2, 1, 0.2))  # row=2
     
+    # 第3个子图：RSI（可选）
     if show_rsi:
-        row_configs.append((3, 3, 0.2) if show_macd else (2, 2, 0.25))
-        row_heights.append(0.2)
+        # RSI的row号取决于MACD是否存在
+        if show_macd:
+            row_configs.append((3, 1, 0.2))  # row=3
+        else:
+            row_configs.append((2, 1, 0.25))  # row=2
+    
+    # 子图数量
+    total_rows = len(row_configs)
     
     fig = make_subplots(
-        rows=len(row_configs), cols=1,
-        row_heights=row_heights,
+        rows=total_rows, cols=1,
+        row_heights=[rc[2] for rc in row_configs],
         vertical_spacing=0.05,
         shared_xaxes=True
     )
     
-    # K线图
+    # ==================== K线图（固定在row=1）====================
     row, col, _ = row_configs[0]
     fig.add_trace(
         go.Candlestick(
@@ -94,7 +104,7 @@ def create_kline_chart(df, buy_signals=None, sell_signals=None,
             go.Scatter(
                 x=buy_dates, y=buy_prices,
                 mode='markers', name='买入',
-                marker=dict(symbol='triangle-up', size=15, color='red', line=dict(width=1, color='darkred'))
+                marker=dict(symbol='triangle-up', size=15, color='#EF4444', line=dict(width=1, color='darkred'))
             ),
             row=row, col=col
         )
@@ -107,17 +117,16 @@ def create_kline_chart(df, buy_signals=None, sell_signals=None,
             go.Scatter(
                 x=sell_dates, y=sell_prices,
                 mode='markers', name='卖出',
-                marker=dict(symbol='triangle-down', size=15, color='green', line=dict(width=1, color='darkgreen'))
+                marker=dict(symbol='triangle-down', size=15, color='#10B981', line=dict(width=1, color='darkgreen'))
             ),
             row=row, col=col
         )
     
-    # MACD
+    # ==================== MACD（固定在row=2）====================
     if show_macd and 'macd' in df.columns:
-        idx = 1 if show_rsi else 0
-        row, col, _ = row_configs[idx + 1]
+        row, col, _ = row_configs[1]
         
-        colors = ['red' if val >= 0 else 'green' for val in df['macd_hist'].fillna(0)]
+        colors = ['#EF4444' if val >= 0 else '#10B981' for val in df['macd_hist'].fillna(0)]
         fig.add_trace(
             go.Bar(x=df['date'], y=df['macd_hist'].fillna(0), name='MACD柱', marker_color=colors),
             row=row, col=col
@@ -131,16 +140,16 @@ def create_kline_chart(df, buy_signals=None, sell_signals=None,
             row=row, col=col
         )
     
-    # RSI
+    # ==================== RSI（最后一个子图）====================
     if show_rsi and 'rsi' in df.columns:
-        row, col, _ = row_configs[-1]
+        row, col, _ = row_configs[-1]  # RSI总是最后一个
         fig.add_trace(
             go.Scatter(x=df['date'], y=df['rsi'], mode='lines', name='RSI', line=dict(color='purple', width=1.5)),
             row=row, col=col
         )
         # 超买超卖线
-        fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=row, col=col)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=row, col=col)
+        fig.add_hline(y=70, line_dash="dash", line_color="#EF4444", opacity=0.5, row=row, col=col)
+        fig.add_hline(y=30, line_dash="dash", line_color="#10B981", opacity=0.5, row=row, col=col)
     
     # 布局设置
     fig.update_layout(
@@ -214,7 +223,7 @@ def create_drawdown_chart(equity_df):
             mode='lines',
             name='回撤',
             fill='tozeroy',
-            line=dict(color='red', width=1)
+            line=dict(color='#EF4444', width=1)
         )
     )
     
@@ -237,7 +246,8 @@ def create_trade_distribution(trades):
     profits = [t['盈亏比例'] for t in trades]
     
     fig = go.Figure()
-    colors = ['green' if p > 0 else 'red' for p in profits]
+    # A股惯例：涨=red，跌=green
+    colors = ['#EF4444' if p > 0 else '#10B981' for p in profits]
     
     fig.add_trace(go.Bar(
         x=list(range(1, len(profits) + 1)),
@@ -266,23 +276,28 @@ def create_summary_metrics(results):
     win_rate = results.get('胜率', 0)
     total_trades = results.get('总交易次数', 0)
     
+    # A股颜色规范：正收益红色，负收益绿色
+    return_color = '#EF4444' if total_return >= 0 else '#10B981'
+    annual_color = '#EF4444' if annual_return >= 0 else '#10B981'
+    sharpe_color = '#EF4444' if sharpe < 0 else '#10B981'  # 夏普负数用红色
+    
     html = f"""
     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin: 20px 0;">
         <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center;">
             <div style="font-size: 14px; color: #9CA3AF; margin-bottom: 8px;">总收益率</div>
-            <div style="font-size: 28px; font-weight: bold; color: {'#10B981' if total_return >= 0 else '#EF4444'};">{total_return:+.2f}%</div>
+            <div style="font-size: 28px; font-weight: bold; color: {return_color};">{total_return:+.2f}%</div>
         </div>
         <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center;">
             <div style="font-size: 14px; color: #9CA3AF; margin-bottom: 8px;">年化收益率</div>
-            <div style="font-size: 28px; font-weight: bold; color: {'#10B981' if annual_return >= 0 else '#EF4444'};">{annual_return:+.2f}%</div>
+            <div style="font-size: 28px; font-weight: bold; color: {annual_color};">{annual_return:+.2f}%</div>
         </div>
         <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center;">
             <div style="font-size: 14px; color: #9CA3AF; margin-bottom: 8px;">最大回撤</div>
-            <div style="font-size: 28px; font-weight: bold; color: #EF4444;">-{max_drawdown:.2f}%</div>
+            <div style="font-size: 28px; font-weight: bold; color: #10B981;">-{max_drawdown:.2f}%</div>
         </div>
         <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center;">
             <div style="font-size: 14px; color: #9CA3AF; margin-bottom: 8px;">夏普比率</div>
-            <div style="font-size: 28px; font-weight: bold; color: {'#10B981' if sharpe >= 0 else '#EF4444'};">{sharpe:.2f}</div>
+            <div style="font-size: 28px; font-weight: bold; color: {sharpe_color};">{sharpe:.2f}</div>
         </div>
         <div style="background: linear-gradient(135deg, #1f2937 0%, #111827 100%); border: 1px solid #374151; border-radius: 12px; padding: 20px; text-align: center;">
             <div style="font-size: 14px; color: #9CA3AF; margin-bottom: 8px;">胜率</div>
@@ -299,128 +314,6 @@ def create_summary_metrics(results):
 
 def export_chart_to_image(fig, filename):
     """导出图表为图片"""
-    img_bytes = fig.to_image(format="png", scale=2)
-    return img_bytes
-
-
-def export_to_pdf_report(results, df, symbol, strategies, params):
-    """生成HTML报告（可打印为PDF）"""
-    total_return = results.get('总收益率', 0)
-    annual_return = results.get('年化收益率', 0)
-    max_drawdown = results.get('最大回撤', 0)
-    sharpe = results.get('夏普比率', 0)
-    win_rate = results.get('胜率', 0)
-    total_trades = results.get('总交易次数', 0)
-    final_equity = results.get('最终资产', 0)
-    profit = results.get('利润总额', 0)
-    
-    strategy_text = " + ".join(strategies) if isinstance(strategies, list) else str(strategies)
-    params_text = ", ".join([f"{k}={v}" for k, v in params.items()]) if params else ""
-    
-    trades_html = ""
-    if results.get('交易记录'):
-        for i, trade in enumerate(results['交易记录'][:20], 1):
-            profit_color = '#10B981' if trade['盈亏金额'] > 0 else '#EF4444'
-            trades_html += f"""
-            <tr>
-                <td>{i}</td>
-                <td>{trade['买入日期']}</td>
-                <td>{trade['买入价格']:.2f}</td>
-                <td>{trade['卖出日期']}</td>
-                <td>{trade['卖出价格']:.2f}</td>
-                <td>{trade['持仓天数']}天</td>
-                <td style="color: {profit_color};">{trade['盈亏金额']:+,.2f}</td>
-                <td style="color: {profit_color};">{trade['盈亏比例']:+.2f}%</td>
-            </tr>
-            """
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>量化回测报告 - {symbol}</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 40px; background: #0e1117; color: #F9FAFB; }}
-            h1 {{ color: #60A5FA; border-bottom: 2px solid #374151; padding-bottom: 10px; }}
-            h2 {{ color: #FCD34D; margin-top: 30px; }}
-            .metric-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }}
-            .metric-card {{ background: #1f2937; border: 1px solid #374151; border-radius: 8px; padding: 15px; text-align: center; }}
-            .metric-label {{ font-size: 12px; color: #9CA3AF; }}
-            .metric-value {{ font-size: 24px; font-weight: bold; }}
-            table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
-            th, td {{ padding: 10px; text-align: center; border: 1px solid #374151; }}
-            th {{ background: #374151; color: #F9FAFB; }}
-            tr:nth-child(even) {{ background: #1f2937; }}
-            .positive {{ color: #10B981; }}
-            .negative {{ color: #EF4444; }}
-        </style>
-    </head>
-    <body>
-        <h1>📈 量化回测报告</h1>
-        <p><strong>标的代码：</strong>{symbol}</p>
-        <p><strong>策略组合：</strong>{strategy_text}</p>
-        <p><strong>策略参数：</strong>{params_text}</p>
-        <p><strong>回测时间：</strong>{df['date'].min().strftime('%Y-%m-%d')} 至 {df['date'].max().strftime('%Y-%m-%d')}</p>
-        
-        <h2>📊 核心指标</h2>
-        <div class="metric-grid">
-            <div class="metric-card">
-                <div class="metric-label">总收益率</div>
-                <div class="metric-value {'positive' if total_return >= 0 else 'negative'}">{total_return:+.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">年化收益率</div>
-                <div class="metric-value {'positive' if annual_return >= 0 else 'negative'}">{annual_return:+.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">最大回撤</div>
-                <div class="metric-value negative">-{max_drawdown:.2f}%</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">夏普比率</div>
-                <div class="metric-value">{sharpe:.2f}</div>
-            </div>
-        </div>
-        
-        <div class="metric-grid">
-            <div class="metric-card">
-                <div class="metric-label">胜率</div>
-                <div class="metric-value">{win_rate:.1f}%</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">交易次数</div>
-                <div class="metric-value">{total_trades}</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">最终资产</div>
-                <div class="metric-value">¥{final_equity:,.2f}</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">利润总额</div>
-                <div class="metric-value {'positive' if profit >= 0 else 'negative'}">¥{profit:+,.2f}</div>
-            </div>
-        </div>
-        
-        <h2>📋 交易明细</h2>
-        <table>
-            <tr>
-                <th>序号</th>
-                <th>买入日期</th>
-                <th>买入价格</th>
-                <th>卖出日期</th>
-                <th>卖出价格</th>
-                <th>持仓天数</th>
-                <th>盈亏金额</th>
-                <th>盈亏比例</th>
-            </tr>
-            {trades_html if trades_html else '<tr><td colspan="8">暂无交易记录</td></tr>'}
-        </table>
-        
-        <p style="text-align: center; margin-top: 50px; color: #9CA3AF;">
-            报告生成时间：{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
-        </p>
-    </body>
-    </html>
-    """
-    return html
+    img_bytes = pio.to_image(fig, format='png', width=1200, height=800)
+    b64 = base64.b64encode(img_bytes).decode()
+    return f"data:image/png;base64,{b64}"
