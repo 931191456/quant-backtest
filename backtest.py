@@ -36,7 +36,10 @@ class BacktestEngine:
             self.buy_signals.append({'date': date, 'price': price, 'type': signal_type})
             return
         
-        max_shares = int(self.cash / (price * (1 + self.buy_fee)) / 100) * 100
+        # 计算每手（100股）成本（含手续费）
+        cost_per_hand = 100 * price * (1 + self.buy_fee)
+        max_hands = int(self.cash / cost_per_hand)
+        max_shares = max_hands * 100
         
         if max_shares < 100:
             return

@@ -190,34 +190,60 @@ with st.sidebar:
     st.markdown("## 📊 量化回测系统 v3.4")
     st.markdown("---")
     
-    # ==================== 搜索标的（去掉了快速入口）====================
+    # ==================== 搜索标的（支持中文和代码搜索）====================
     st.markdown("### 🔍 搜索标的")
     
+    # 搜索输入框
     search_keyword = st.text_input(
         "输入代码或名称",
-        placeholder="如：平安、000001、茅台",
+        placeholder="如：茅台、600519、平安",
         label_visibility="collapsed",
         key="search_input"
     )
     
+    # 初始化搜索结果session_state
+    if 'search_results' not in st.session_state:
+        st.session_state.search_results = []
+    
+    # 搜索逻辑（当有输入时实时搜索）
     if search_keyword and len(search_keyword) >= 1:
         results = search_all(search_keyword, limit=10)
-        if results:
-            options = [f"{r['name']}({r['code']}) [{r['type']}]" for r in results]
-            selected_option = st.selectbox(
-                "选择",
-                options,
-                label_visibility="collapsed",
-                key="search_result_select"
-            )
-            
-            for r in results:
-                if f"{r['name']}({r['code']}) [{r['type']}]" == selected_option:
-                    st.session_state.selected_code = r['code']
-                    st.session_state.selected_name = r['name']
-                    st.session_state.selected_type = r['type']
-                    st.session_state.update_message = None
-                    break
+        st.session_state.search_results = results
+    else:
+        st.session_state.search_results = []
+    
+    # 构建选项列表
+    all_options = []
+    all_options_map = {}
+    
+    if st.session_state.search_results:
+        # 有搜索结果时，只显示搜索结果
+        for r in st.session_state.search_results:
+            label = f"{r['name']}({r['code']}) [{r['type']}]"
+            all_options.append(label)
+            all_options_map[label] = r
+    else:
+        # 无搜索结果时，显示当前选中项
+        current_label = f"{name}({code}) [{item_type}]"
+        all_options.append(current_label)
+        all_options_map[current_label] = {"code": code, "name": name, "type": item_type}
+    
+    # 选择框（始终显示）
+    selected_option = st.selectbox(
+        "选择标的",
+        options=all_options,
+        index=0,
+        label_visibility="collapsed",
+        key="search_result_select"
+    )
+    
+    # 更新选中的标的
+    if selected_option and selected_option in all_options_map:
+        selected_info = all_options_map[selected_option]
+        st.session_state.selected_code = selected_info['code']
+        st.session_state.selected_name = selected_info['name']
+        st.session_state.selected_type = selected_info['type']
+        st.session_state.update_message = None
     
     # 显示当前选中
     code = st.session_state.selected_code

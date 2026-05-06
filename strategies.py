@@ -92,11 +92,11 @@ def calculate_skdj(df, n=9, m=3):
     rsv = (df['close'] - low_n) / (high_n - low_n) * 100
     rsv = rsv.fillna(50)
     
-    # K值：RSV的M周期简单移动平均
-    df['skdj_k'] = rsv.rolling(window=m, min_periods=1).mean()
+    # K值：RSV的M周期简单移动平均（min_periods=m避免开头K/D相等）
+    df['skdj_k'] = rsv.rolling(window=m, min_periods=m).mean()
     
-    # D值：K的M周期简单移动平均
-    df['skdj_d'] = df['skdj_k'].rolling(window=m, min_periods=1).mean()
+    # D值：K的M周期简单移动平均（min_periods=m避免开头K/D相等）
+    df['skdj_d'] = df['skdj_k'].rolling(window=m, min_periods=m).mean()
     
     return df
 
