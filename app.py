@@ -224,9 +224,12 @@ with st.sidebar:
             all_options_map[label] = r
     else:
         # 无搜索结果时，显示当前选中项
-        current_label = f"{name}({code}) [{item_type}]"
+        _name = st.session_state.get('selected_name', '贵州茅台')
+        _code = st.session_state.get('selected_code', '600519')
+        _type = st.session_state.get('selected_type', '股票')
+        current_label = f"{_name}({_code}) [{_type}]"
         all_options.append(current_label)
-        all_options_map[current_label] = {"code": code, "name": name, "type": item_type}
+        all_options_map[current_label] = {"code": _code, "name": _name, "type": _type}
     
     # 选择框（始终显示）
     selected_option = st.selectbox(
