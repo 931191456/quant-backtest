@@ -102,14 +102,43 @@ for code, name in BUILTIN_INDICES.items():
         ALL_ITEMS[code] = {"name": name, "type": "指数"}
 
 
+def _query_stock_info_online(code):
+    """通过东方财富API在线查询股票/ETF信息"""
+    import requests
+    # 判断市场
+    prefix = "1" if code.startswith(('5', '6', '9')) else "0"
+    secid = f"{prefix}.{code}"
+    url = "https://push2.eastmoney.com/api/qt/stock/get"
+    params = {
+        "secid": secid,
+        "fields": "f57,f58,f62"  # 代码、名称、类型
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://quote.eastmoney.com/"
+    }
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        data = resp.json()
+        if data and 'data' in data and data['data']:
+            name = data['data'].get('f58', '')
+            # f62: 1=沪A, 0=深A, 判断类型
+            stock_type = "ETF" if 'ETF' in name.upper() or code.startswith(('51', '15', '16')) else "股票"
+            return {"code": code, "name": name, "type": stock_type}
+    except:
+        pass
+    return None
+
+
 def search_all(keyword, limit=20):
-    """统一搜索"""
+    """统一搜索，内置字典优先，找不到则在线查询"""
     if not keyword:
         return []
     
     keyword = keyword.upper().strip()
     results = []
     
+    # 先从内置字典搜索
     for code, info in ALL_ITEMS.items():
         name = info["name"]
         item_type = info["type"]
@@ -117,6 +146,12 @@ def search_all(keyword, limit=20):
             results.append({"code": code, "name": name, "type": item_type})
             if len(results) >= limit:
                 break
+    
+    # 如果内置字典没结果，且keyword像代码（纯数字4-6位），尝试在线查询
+    if not results and keyword.isdigit() and 4 <= len(keyword) <= 6:
+        online_result = _query_stock_info_online(keyword)
+        if online_result:
+            results.append(online_result)
     
     return results
 
