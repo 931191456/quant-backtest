@@ -212,13 +212,18 @@ with st.sidebar:
             all_options.append(label)
             all_options_map[label] = r
     else:
-        # 无搜索结果时，显示当前选中项
-        _name = st.session_state.get('selected_name', '贵州茅台')
-        _code = st.session_state.get('selected_code', '600519')
+        # 无搜索结果时，显示当前选中项或空提示
+        _name = st.session_state.get('selected_name')
+        _code = st.session_state.get('selected_code')
         _type = st.session_state.get('selected_type', '股票')
-        current_label = f"{_name}({_code}) [{_type}]"
-        all_options.append(current_label)
-        all_options_map[current_label] = {"code": _code, "name": _name, "type": _type}
+        if _name and _code:
+            current_label = f"{_name}({_code}) [{_type}]"
+            all_options.append(current_label)
+            all_options_map[current_label] = {"code": _code, "name": _name, "type": _type}
+        else:
+            empty_label = "请搜索选择标的..."
+            all_options.append(empty_label)
+            all_options_map[empty_label] = None
     
     # 选择框（始终显示）
     selected_option = st.selectbox(
@@ -232,10 +237,11 @@ with st.sidebar:
     # 更新选中的标的
     if selected_option and selected_option in all_options_map:
         selected_info = all_options_map[selected_option]
-        st.session_state.selected_code = selected_info['code']
-        st.session_state.selected_name = selected_info['name']
-        st.session_state.selected_type = selected_info['type']
-        st.session_state.update_message = None
+        if selected_info is not None:
+            st.session_state.selected_code = selected_info['code']
+            st.session_state.selected_name = selected_info['name']
+            st.session_state.selected_type = selected_info['type']
+            st.session_state.update_message = None
     
     # 检查是否已选择标的
     code = st.session_state.selected_code
