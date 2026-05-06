@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v3.4
+量化回测网站 v3.5
 修复：K线图渲染 + 去掉快速入口 + 行业ETF基准 + A股颜色规范 + 策略说明
 """
 
@@ -50,7 +50,7 @@ except ImportError as e:
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v3.4",
+    page_title="量化回测系统 v3.5",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -176,7 +176,7 @@ def update_stock_data(code, item_type):
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v3.4")
+    st.markdown("## 📊 量化回测系统 v3.5")
     st.markdown("---")
     
     # ==================== 搜索标的（支持中文和代码搜索）====================
@@ -439,7 +439,7 @@ with st.sidebar:
 
 
 # ==================== 主内容区 ====================
-st.markdown('<div class="main-title">📈 量化回测系统 v3.4</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📈 量化回测系统 v3.5</div>', unsafe_allow_html=True)
 
 # 当前标的信息（只有选择了标的才显示）
 code = st.session_state.selected_code
