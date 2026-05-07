@@ -683,6 +683,35 @@ if st.session_state.results is not None:
             st.metric("胜率", f"{results.get('胜率', 0)*100:.1f}%")
         with col8:
             st.metric("总交易次数", results.get('总交易次数', 0))
+        
+        # 交易明细表
+        trades = results.get('交易记录', [])
+        if trades and len(trades) > 0:
+            st.markdown("---")
+            st.markdown("#### 📜 交易明细")
+            trades_df = pd.DataFrame(trades)
+            # 格式化显示
+            display_df = trades_df.copy()
+            if '买入日期' in display_df.columns:
+                display_df['买入日期'] = display_df['买入日期'].astype(str)
+            if '卖出日期' in display_df.columns:
+                display_df['卖出日期'] = display_df['卖出日期'].astype(str)
+            if '买入价格' in display_df.columns:
+                display_df['买入价格'] = display_df['买入价格'].apply(lambda x: f"{x:.2f}")
+            if '卖出价格' in display_df.columns:
+                display_df['卖出价格'] = display_df['卖出价格'].apply(lambda x: f"{x:.2f}")
+            if '买入数量' in display_df.columns:
+                display_df['买入数量'] = display_df['买入数量'].apply(lambda x: f"{int(x)}")
+            if '盈亏金额' in display_df.columns:
+                display_df['盈亏金额'] = display_df['盈亏金额'].apply(lambda x: f"{x:+,.2f}")
+            if '盈亏比例' in display_df.columns:
+                display_df['盈亏比例'] = display_df['盈亏比例'].apply(lambda x: f"{x:+.2f}%")
+            if '买入手续费' in display_df.columns:
+                display_df['买入手续费'] = display_df['买入手续费'].apply(lambda x: f"{x:.2f}")
+            if '卖出手续费' in display_df.columns:
+                display_df['卖出手续费'] = display_df['卖出手续费'].apply(lambda x: f"{x:.2f}")
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     # ==================== 图表展示 ====================
     st.markdown("---")
