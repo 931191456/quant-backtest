@@ -475,95 +475,110 @@ def _fetch_index_from_akshare(symbol, start_date, end_date):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_etf_data(symbol, start_date, end_date, adjust="qfq"):
-    """
-    获取ETF历史数据
-    1. 优先读本地parquet（秒开）
-    2. 检查数据新鲜度，超过3天自动更新
-    3. 本地没有则在线拉取
-    """
+    """获取ETF历史数据：优先本地缓存，其次腾讯API，最后akshare"""
     symbol = symbol.zfill(6)
     
-    # 1. 读本地
+    # 1. 读本地缓存
     df = _read_local_parquet(symbol, start_date, end_date)
+    if df is not None and len(df) > 0 and not _check_data_freshness(df):
+        return df
     
-    # 2. 检查是否需要更新
-    if df is not None and len(df) > 0:
-        # 数据太旧，更新
-        if _check_data_freshness(df):
-            try:
-                new_df = _fetch_etf_from_akshare(symbol, start_date, end_date, adjust)
-                if new_df is not None and len(new_df) > 0:
-                    _save_to_parquet(new_df, symbol)
-                    df = new_df
-            except DataFetchError:
-                pass  # 更新失败，用旧数据
+    # 2. 腾讯财经API（最可靠）
+    try:
+        new_df = _fetch_from_tencent(symbol, start_date, end_date, "ETF")
+        if new_df is not None and len(new_df) > 0:
+            _save_to_parquet(new_df, symbol)
+            return new_df
+    except DataFetchError:
+        pass
     
+    # 3. akshare fallback
+    if ak is not None:
+        try:
+            new_df = _fetch_etf_from_akshare(symbol, start_date, end_date, adjust)
+            if new_df is not None and len(new_df) > 0:
+                _save_to_parquet(new_df, symbol)
+                return new_df
+        except DataFetchError:
+            pass
+    
+    # 4. 返回旧缓存（即使过期）
     if df is not None and len(df) > 0:
         return df
     
-    # 3. 在线拉取
-    df = _fetch_etf_from_akshare(symbol, start_date, end_date, adjust)
-    if df is not None and len(df) > 0:
-        _save_to_parquet(df, symbol)
-    return df
+    raise DataFetchError(f"无法获取ETF {symbol} 的数据", "all_sources_failed")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_stock_data(symbol, start_date, end_date, adjust="qfq"):
-    """获取个股历史数据"""
+    """获取个股历史数据：优先本地缓存，其次腾讯API，最后akshare"""
     symbol = symbol.zfill(6)
     
-    # 1. 读本地
+    # 1. 读本地缓存
     df = _read_local_parquet(symbol, start_date, end_date)
+    if df is not None and len(df) > 0 and not _check_data_freshness(df):
+        return df
     
-    # 2. 检查是否需要更新
-    if df is not None and len(df) > 0:
-        if _check_data_freshness(df):
-            try:
-                new_df = _fetch_stock_from_akshare(symbol, start_date, end_date, adjust)
-                if new_df is not None and len(new_df) > 0:
-                    _save_to_parquet(new_df, symbol)
-                    df = new_df
-            except DataFetchError:
-                pass
+    # 2. 腾讯财经API（最可靠）
+    try:
+        new_df = _fetch_from_tencent(symbol, start_date, end_date, "stock")
+        if new_df is not None and len(new_df) > 0:
+            _save_to_parquet(new_df, symbol)
+            return new_df
+    except DataFetchError:
+        pass
     
+    # 3. akshare fallback
+    if ak is not None:
+        try:
+            new_df = _fetch_stock_from_akshare(symbol, start_date, end_date, adjust)
+            if new_df is not None and len(new_df) > 0:
+                _save_to_parquet(new_df, symbol)
+                return new_df
+        except DataFetchError:
+            pass
+    
+    # 4. 返回旧缓存（即使过期）
     if df is not None and len(df) > 0:
         return df
     
-    # 3. 在线拉取
-    df = _fetch_stock_from_akshare(symbol, start_date, end_date, adjust)
-    if df is not None and len(df) > 0:
-        _save_to_parquet(df, symbol)
-    return df
+    raise DataFetchError(f"无法获取股票 {symbol} 的数据", "all_sources_failed")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_index_data(symbol, start_date, end_date):
-    """获取指数历史数据"""
+    """获取指数历史数据：优先本地缓存，其次腾讯API，最后akshare"""
     symbol = symbol.zfill(6)
     
-    # 1. 读本地
+    # 1. 读本地缓存
     df = _read_local_parquet(symbol, start_date, end_date)
+    if df is not None and len(df) > 0 and not _check_data_freshness(df):
+        return df
     
-    # 2. 检查是否需要更新
-    if df is not None and len(df) > 0:
-        if _check_data_freshness(df):
-            try:
-                new_df = _fetch_index_from_akshare(symbol, start_date, end_date)
-                if new_df is not None and len(new_df) > 0:
-                    _save_to_parquet(new_df, symbol)
-                    df = new_df
-            except DataFetchError:
-                pass
+    # 2. 腾讯财经API（最可靠）
+    try:
+        new_df = _fetch_from_tencent(symbol, start_date, end_date, "指数")
+        if new_df is not None and len(new_df) > 0:
+            _save_to_parquet(new_df, symbol)
+            return new_df
+    except DataFetchError:
+        pass
     
+    # 3. akshare fallback
+    if ak is not None:
+        try:
+            new_df = _fetch_index_from_akshare(symbol, start_date, end_date)
+            if new_df is not None and len(new_df) > 0:
+                _save_to_parquet(new_df, symbol)
+                return new_df
+        except DataFetchError:
+            pass
+    
+    # 4. 返回旧缓存（即使过期）
     if df is not None and len(df) > 0:
         return df
     
-    # 3. 在线拉取
-    df = _fetch_index_from_akshare(symbol, start_date, end_date)
-    if df is not None and len(df) > 0:
-        _save_to_parquet(df, symbol)
-    return df
+    raise DataFetchError(f"无法获取指数 {symbol} 的数据", "all_sources_failed")
 
 
 def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
