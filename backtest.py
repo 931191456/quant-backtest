@@ -96,6 +96,9 @@ class BacktestEngine:
         
         self.cash = self.cash + net_value
         
+        # 更新交易记录中的账户余额
+        trade_record['账户余额'] = self.cash
+        
         self.sell_signals.append({'date': date, 'price': price, 'type': reason})
         
         self.position = 0
