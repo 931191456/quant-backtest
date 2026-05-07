@@ -523,15 +523,12 @@ def _fetch_index_from_akshare(symbol, start_date, end_date):
 
 def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     """
-    获取K线数据，多源自动切换（带重试机制）
+    获取K线数据，本地优先模式（v5.3 全量数据本地化）
     
-    获取顺序（v4.3 修复后）：
-    1. 本地parquet缓存（如果数据足够新且覆盖请求范围）
-    2. 腾讯API（首选！分段拉取5-7年，Streamlit Cloud稳定可用）
-    3. 东方财富push2his API（备用，Streamlit Cloud可能被封）
-    4. akshare（备用，Python 3.14不可用）
-    5. 返回旧缓存（即使过期）
-    6. 全失败才报错
+    获取顺序：
+    1. 本地parquet缓存（优先使用，即使过期也用，因为全量数据已下载）
+    2. 在线获取仅作为兜底（如果本地没有数据）
+    3. 返回本地数据或报错
     
     Parameters:
     -----------
@@ -546,14 +543,16 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     pd.DataFrame - K线数据
     """
     symbol = symbol.zfill(6)
-    errors = []
     
-    # 1. 先尝试本地缓存
+    # 1. 优先读取本地parquet（即使过期也使用，因为全量数据已下载到本地）
     local_df = _read_local_parquet(symbol, start_date, end_date)
-    if local_df is not None and len(local_df) > 0 and not _check_data_freshness(local_df):
+    if local_df is not None and len(local_df) > 0:
         return local_df
     
-    # 2. 腾讯API获取（首选！分段拉取5-7年数据，Streamlit Cloud稳定可用）
+    # 2. 本地没有才在线获取（兜底，仅用于首次下载）
+    errors = []
+    
+    # 腾讯API获取
     for attempt in range(TENCENT_RETRIES):
         try:
             df = _fetch_from_tencent(symbol, start_date, end_date, stock_type)
@@ -561,40 +560,27 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
                 _save_to_parquet(df, symbol)
                 return df
         except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {type(e).__name__}")
-            if attempt < TENCENT_RETRIES - 1:
-                time.sleep(TENCENT_RETRY_DELAY)
+            errors.append(f"腾讯API: {type(e).__name__}")
         except DataFetchError as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
+            errors.append(f"腾讯API: {e.message}")
         except Exception as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {str(e)}")
-            if attempt < TENCENT_RETRIES - 1:
-                time.sleep(TENCENT_RETRY_DELAY)
+            errors.append(f"腾讯API: {str(e)}")
+        if attempt < TENCENT_RETRIES - 1:
+            time.sleep(TENCENT_RETRY_DELAY)
     
-    # 3. 东方财富API获取（备用，Streamlit Cloud可能被封）
+    # 东方财富API获取
     for attempt in range(EM_RETRIES):
         try:
             df = _fetch_from_eastmoney(symbol, start_date, end_date, stock_type)
             if df is not None and len(df) > 0:
                 _save_to_parquet(df, symbol)
                 return df
-        except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
-            errors.append(f"东方财富尝试{attempt+1}: {type(e).__name__}")
-            if attempt < EM_RETRIES - 1:
-                time.sleep(EM_RETRY_DELAY)
-        except DataFetchError as e:
-            if "timeout" in e.error_type.lower() or "connection" in e.error_type.lower():
-                errors.append(f"东方财富尝试{attempt+1}: {e.message}")
-                if attempt < EM_RETRIES - 1:
-                    time.sleep(EM_RETRY_DELAY)
-            else:
-                errors.append(f"东方财富尝试{attempt+1}: {e.message}")
         except Exception as e:
-            errors.append(f"东方财富尝试{attempt+1}: {str(e)}")
-            if attempt < EM_RETRIES - 1:
-                time.sleep(EM_RETRY_DELAY)
+            errors.append(f"东方财富: {str(e)}")
+        if attempt < EM_RETRIES - 1:
+            time.sleep(EM_RETRY_DELAY)
     
-    # 4. akshare获取（备用，Python 3.14不可用）
+    # akshare获取
     if ak is not None:
         for attempt in range(AKSHARE_RETRIES):
             try:
@@ -608,31 +594,16 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
                 if df is not None and len(df) > 0:
                     _save_to_parquet(df, symbol)
                     return df
-            except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
-                errors.append(f"akshare尝试{attempt+1}: {type(e).__name__}")
-                if attempt < AKSHARE_RETRIES - 1:
-                    time.sleep(AKSHARE_RETRY_DELAY)
-            except DataNotFoundError:
-                errors.append(f"akshare尝试{attempt+1}: 数据不存在")
+            except (DataNotFoundError, DataSuspendedError) as e:
+                errors.append(f"akshare: {e.message}")
                 break
-            except DataSuspendedError:
-                errors.append(f"akshare尝试{attempt+1}: 数据停牌")
-                break
-            except DataFetchError as e:
-                errors.append(f"akshare尝试{attempt+1}: {e.message}")
-                if attempt < AKSHARE_RETRIES - 1:
-                    time.sleep(AKSHARE_RETRY_DELAY)
             except Exception as e:
-                errors.append(f"akshare尝试{attempt+1}: {str(e)}")
-                if attempt < AKSHARE_RETRIES - 1:
-                    time.sleep(AKSHARE_RETRY_DELAY)
+                errors.append(f"akshare: {str(e)}")
+            if attempt < AKSHARE_RETRIES - 1:
+                time.sleep(AKSHARE_RETRY_DELAY)
     
-    # 5. 返回旧缓存（即使过期）
-    if local_df is not None and len(local_df) > 0:
-        return local_df
-    
-    # 6. 全失败
-    raise DataFetchError(f"所有数据源均失败: {'; '.join(errors)}", "all_sources_failed")
+    # 全失败
+    raise DataFetchError(f"数据获取失败: {'; '.join(errors)}", "all_sources_failed")
 
 
 # ==================== 兼容旧接口 ====================
