@@ -113,7 +113,7 @@ class DataSuspendedError(DataFetchError):
 
 
 def _read_local_parquet(symbol, start_date, end_date):
-    """读取本地parquet缓存"""
+    """读取本地parquet缓存，同时检查缓存是否覆盖请求的日期范围"""
     cache_file = os.path.join(DATA_DIR, f"{symbol}.parquet")
     if os.path.exists(cache_file):
         try:
@@ -121,6 +121,15 @@ def _read_local_parquet(symbol, start_date, end_date):
             df['date'] = pd.to_datetime(df['date'])
             start_dt = pd.to_datetime(start_date)
             end_dt = pd.to_datetime(end_date)
+            
+            # 检查缓存是否覆盖了请求的日期范围
+            cache_start = df['date'].min()
+            cache_end = df['date'].max()
+            
+            # 如果缓存的起始日期晚于请求的起始日期，说明缓存不够长，需要重新获取
+            if cache_start > start_dt + timedelta(days=5):  # 允许5天误差（节假日）
+                return None
+            
             df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
             return df
         except:
@@ -129,11 +138,21 @@ def _read_local_parquet(symbol, start_date, end_date):
 
 
 def _save_to_parquet(df, symbol):
-    """保存到本地parquet缓存"""
+    """保存到本地parquet缓存，合并已有缓存数据"""
     os.makedirs(DATA_DIR, exist_ok=True)
     cache_file = os.path.join(DATA_DIR, f"{symbol}.parquet")
     try:
-        df.to_parquet(cache_file, index=False)
+        if os.path.exists(cache_file):
+            # 合并新旧数据
+            old_df = pd.read_parquet(cache_file)
+            old_df['date'] = pd.to_datetime(old_df['date'])
+            df['date'] = pd.to_datetime(df['date'])
+            combined = pd.concat([old_df, df], ignore_index=True)
+            combined = combined.drop_duplicates(subset=['date'], keep='last')
+            combined = combined.sort_values('date').reset_index(drop=True)
+            combined.to_parquet(cache_file, index=False)
+        else:
+            df.to_parquet(cache_file, index=False)
     except:
         pass
 
