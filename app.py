@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v4.1
+量化回测网站 v4.2
 - 搜索：本地 all_stocks.json（6971条数据），不联网
-- K线行情：在线获取并存本地parquet，下次秒开
+- K线行情：东方财富API优先（5-7年数据）+ akshare + 腾讯API fallback
 """
 
 import streamlit as st
@@ -51,7 +51,7 @@ except ImportError as e:
 
 # ==================== 页面配置 ====================
 st.set_page_config(
-    page_title="量化回测系统 v4.1",
+    page_title="量化回测系统 v4.2",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -177,7 +177,7 @@ def update_stock_data(code, item_type):
 
 # ==================== 侧边栏 ====================
 with st.sidebar:
-    st.markdown("## 📊 量化回测系统 v4.1")
+    st.markdown("## 📊 量化回测系统 v4.2")
     st.markdown("---")
     
     # ==================== 搜索标的（支持中文和代码搜索）====================

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-数据获取模块 v5.0
-- 重构数据获取流程：本地parquet → akshare(3次重试) → 腾讯API(2次重试)
-- 修复腾讯API代码前缀判断逻辑
-- ETF支持51/15/16开头
+数据获取模块 v6.0
+- 优先使用东方财富API获取5-7年历史数据
+- akshare作为第二数据源
+- 腾讯API作为第三数据源（备用）
+- 修复腾讯API limit参数（从320改为800）
+- 修复北交所secid格式
 """
 
 try:
@@ -25,12 +27,17 @@ from http.client import RemoteDisconnected
 
 # 超时设置
 TIMEOUT = 15
-AKSHARE_RETRIES = 3
+AKSHARE_RETRIES = 2
 TENCENT_RETRIES = 2
-AKSHARE_RETRY_DELAY = 2  # 秒
-TENCENT_RETRY_DELAY = 1  # 秒
+AKSHARE_RETRY_DELAY = 2
+TENCENT_RETRY_DELAY = 1
+EM_RETRIES = 2
+EM_RETRY_DELAY = 1
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
-DATA_STALE_DAYS = 3  # 数据超过3天自动更新
+DATA_STALE_DAYS = 3
+
+# 东方财富API设置
+EM_API_BASE = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 
 # ==================== 从本地JSON加载全量数据 ====================
 def load_all_items():
@@ -127,7 +134,7 @@ def _read_local_parquet(symbol, start_date, end_date):
             cache_end = df['date'].max()
             
             # 如果缓存的起始日期晚于请求的起始日期，说明缓存不够长，需要重新获取
-            if cache_start > start_dt + timedelta(days=5):  # 允许5天误差（节假日）
+            if cache_start > start_dt + timedelta(days=5):
                 return None
             
             df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
@@ -165,15 +172,40 @@ def _check_data_freshness(df):
     return (datetime.now() - latest).days > DATA_STALE_DAYS
 
 
-def _get_symbol_prefix(symbol, stock_type="stock"):
+def _get_em_secid(symbol, stock_type="stock"):
+    """
+    获取东方财富API的secid格式
+    1 = 上海市场
+    0 = 深圳市场（包括创业板、中小板、北交所）
+    """
+    symbol = symbol.zfill(6)
+    
+    if stock_type == "ETF":
+        # ETF判断
+        if symbol.startswith("15") or symbol.startswith("16") or symbol.startswith("13"):
+            return f"0.{symbol}"  # 深圳ETF
+        else:
+            return f"1.{symbol}"  # 上海ETF
+    
+    if stock_type == "指数":
+        # 指数通常用上海前缀
+        if symbol.startswith("000") or symbol.startswith("399"):
+            return f"0.{symbol}"
+        else:
+            return f"1.{symbol}"
+    
+    # 股票判断
+    if symbol.startswith("6") or symbol.startswith("9") or symbol.startswith("8"):
+        return f"1.{symbol}"  # 上海主板、科创板
+    elif symbol.startswith("4") or symbol.startswith("8"):
+        return f"0.{symbol}"  # 北交所用0前缀
+    else:
+        return f"0.{symbol}"  # 深圳主板、创业板、中小板
+
+
+def _get_tencent_prefix(symbol, stock_type="stock"):
     """
     根据代码判断腾讯API需要的前缀
-    正确的规则：
-    - 6开头 → sh（上海主板、科创板）
-    - 0开头、3开头 → sz（深圳主板、创业板）
-    - 688开头 → sh（科创板）
-    - 8开头、4开头 → bj（北交所）
-    - ETF：51开头→sh，15开头→sz，16开头→sz
     """
     symbol = symbol.zfill(6)
     
@@ -183,38 +215,107 @@ def _get_symbol_prefix(symbol, stock_type="stock"):
             return "sh"
         elif symbol.startswith("15") or symbol.startswith("16") or symbol.startswith("13"):
             return "sz"
-        elif symbol.startswith("8") or symbol.startswith("4"):
-            return "bj"
         else:
-            return "sh"  # 默认
+            return "sh"
     
     # 股票判断
     if symbol.startswith("688"):
-        return "sh"  # 科创板
+        return "sh"
     elif symbol.startswith("6"):
-        return "sh"  # 上海主板
+        return "sh"
     elif symbol.startswith("000") or symbol.startswith("001"):
-        return "sz"  # 深圳主板
+        return "sz"
     elif symbol.startswith("002") or symbol.startswith("003"):
-        return "sz"  # 中小板
+        return "sz"
     elif symbol.startswith("300"):
-        return "sz"  # 创业板
-    elif symbol.startswith("8") or symbol.startswith("4"):
+        return "sz"
+    elif symbol.startswith("4") or symbol.startswith("8"):
         return "bj"  # 北交所
     else:
-        return "sh"  # 默认
+        return "sh"
+
+
+def _fetch_from_eastmoney(symbol, start_date, end_date, stock_type="stock"):
+    """从东方财富API获取数据（支持获取5-7年历史数据）"""
+    symbol = symbol.zfill(6)
+    secid = _get_em_secid(symbol, stock_type)
+    
+    # 计算获取的数据量：7年约1750条交易日
+    lmt = 2000  # 请求2000条，足够5-7年
+    
+    url = f"{EM_API_BASE}?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58&klt=101&fqt=1&end=20991231&lmt={lmt}"
+    
+    try:
+        resp = requests.get(url, timeout=TIMEOUT)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        
+        klines = data.get('data', {}).get('klines', [])
+        
+        if not klines:
+            raise DataFetchError(f"{symbol} 东方财富API无K线数据", "em_no_data")
+        
+        # 解析数据
+        records = []
+        for kline in klines:
+            parts = kline.split(',')
+            if len(parts) >= 6:
+                try:
+                    records.append({
+                        'date': parts[0],
+                        'open': float(parts[1]),
+                        'close': float(parts[2]),
+                        'high': float(parts[3]),
+                        'low': float(parts[4]),
+                        'volume': float(parts[5])
+                    })
+                except (ValueError, IndexError):
+                    continue
+        
+        if not records:
+            raise DataFetchError(f"{symbol} 东方财富API数据解析失败", "em_parse_error")
+        
+        df = pd.DataFrame(records)
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # 按日期筛选
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
+        
+        df = df.sort_values('date').reset_index(drop=True)
+        
+        if len(df) == 0:
+            raise DataFetchError(f"{symbol} 东方财富API数据为空", "em_empty")
+        
+        return df
+        
+    except requests.exceptions.Timeout:
+        raise DataFetchError(f"{symbol} 东方财富API超时", "em_timeout")
+    except requests.exceptions.ConnectionError as e:
+        raise DataFetchError(f"{symbol} 东方财富API连接失败", "em_connection")
+    except (ConnectionError, RemoteDisconnected) as e:
+        raise DataFetchError(f"{symbol} 东方财富API连接中断", "em_connection")
+    except json.JSONDecodeError:
+        raise DataFetchError(f"{symbol} 东方财富API返回JSON解析失败", "em_parse")
+    except DataFetchError:
+        raise
+    except Exception as e:
+        raise DataFetchError(f"{symbol} 东方财富API错误: {str(e)}", "em_error")
 
 
 def _fetch_from_tencent(symbol, start_date, end_date, stock_type="stock"):
     """从腾讯财经API获取数据"""
     symbol = symbol.zfill(6)
-    prefix = _get_symbol_prefix(symbol, stock_type)
+    prefix = _get_tencent_prefix(symbol, stock_type)
     
     # 转换日期格式
     start_str = str(start_date).replace('-', '')
     end_str = str(end_date).replace('-', '')
     
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=kline_dayqfq&param={prefix}{symbol},day,{start_str},{end_str},320,qfq"
+    # 注意：腾讯API不支持日期范围，这里忽略日期参数获取所有可用数据
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=kline_dayqfq&param={prefix}{symbol},day,,,800,qfq"
     
     try:
         resp = requests.get(url, timeout=TIMEOUT)
@@ -231,18 +332,44 @@ def _fetch_from_tencent(symbol, start_date, end_date, stock_type="stock"):
         if f"{prefix}{symbol}" not in data.get('data', {}):
             raise DataFetchError(f"{symbol} 腾讯API未找到该股票", "tencent_not_found")
         
-        day_data = data['data'][f"{prefix}{symbol}"]['qfqday']
+        stock_data = data['data'][f"{prefix}{symbol}"]
         
-        df = pd.DataFrame(day_data, columns=['date', 'open', 'close', 'high', 'low', 'volume', 'amount', 'unused'])
-        df = df[['date', 'open', 'close', 'high', 'low', 'volume']]
+        # ETF使用day字段，股票使用qfqday字段
+        if stock_type == "ETF":
+            day_data = stock_data.get('day', [])
+        else:
+            day_data = stock_data.get('qfqday', [])
+        
+        if not day_data:
+            raise DataFetchError(f"{symbol} 腾讯API数据为空", "tencent_empty")
+        
+        # 解析数据
+        records = []
+        for item in day_data:
+            if len(item) >= 6:
+                try:
+                    records.append({
+                        'date': item[0],
+                        'open': float(item[1]),
+                        'close': float(item[2]),
+                        'high': float(item[3]),
+                        'low': float(item[4]),
+                        'volume': float(item[5])
+                    })
+                except (ValueError, IndexError):
+                    continue
+        
+        if not records:
+            raise DataFetchError(f"{symbol} 腾讯API数据解析失败", "tencent_parse")
+        
+        df = pd.DataFrame(records)
         df['date'] = pd.to_datetime(df['date'])
-        for col in ['open', 'close', 'high', 'low', 'volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna()
         df = df.sort_values('date').reset_index(drop=True)
         
-        if len(df) == 0:
-            raise DataFetchError(f"{symbol} 腾讯API数据为空", "empty_data")
+        # 按日期筛选
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
         
         return df
         
@@ -254,6 +381,8 @@ def _fetch_from_tencent(symbol, start_date, end_date, stock_type="stock"):
         raise DataFetchError(f"{symbol} 腾讯API连接中断", "tencent_connection")
     except json.JSONDecodeError:
         raise DataFetchError(f"{symbol} 腾讯API返回JSON解析失败", "tencent_parse")
+    except DataFetchError:
+        raise
     except Exception as e:
         raise DataFetchError(f"{symbol} 腾讯API错误: {str(e)}", "tencent_error")
 
@@ -353,11 +482,12 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     获取K线数据，多源自动切换（带重试机制）
     
     获取顺序：
-    1. 本地parquet缓存（如果数据足够新）
-    2. akshare（重试3次，每次间隔2秒）
-    3. 腾讯API（重试2次，每次间隔1秒）
-    4. 返回旧缓存（即使过期）
-    5. 全失败才报错
+    1. 本地parquet缓存（如果数据足够新且覆盖请求范围）
+    2. 东方财富API（重试2次，支持5-7年历史数据）
+    3. akshare（重试2次）
+    4. 腾讯API（重试2次）
+    5. 返回旧缓存（即使过期）
+    6. 全失败才报错
     
     Parameters:
     -----------
@@ -379,7 +509,30 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     if local_df is not None and len(local_df) > 0 and not _check_data_freshness(local_df):
         return local_df
     
-    # 2. akshare获取（重试3次，每次间隔2秒）
+    # 2. 东方财富API获取（重试2次，优先获取5-7年历史数据）
+    for attempt in range(EM_RETRIES):
+        try:
+            df = _fetch_from_eastmoney(symbol, start_date, end_date, stock_type)
+            if df is not None and len(df) > 0:
+                _save_to_parquet(df, symbol)
+                return df
+        except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
+            errors.append(f"东方财富尝试{attempt+1}: {type(e).__name__}")
+            if attempt < EM_RETRIES - 1:
+                time.sleep(EM_RETRY_DELAY)
+        except DataFetchError as e:
+            if "timeout" in e.error_type.lower() or "connection" in e.error_type.lower():
+                errors.append(f"东方财富尝试{attempt+1}: {e.message}")
+                if attempt < EM_RETRIES - 1:
+                    time.sleep(EM_RETRY_DELAY)
+            else:
+                errors.append(f"东方财富尝试{attempt+1}: {e.message}")
+        except Exception as e:
+            errors.append(f"东方财富尝试{attempt+1}: {str(e)}")
+            if attempt < EM_RETRIES - 1:
+                time.sleep(EM_RETRY_DELAY)
+    
+    # 3. akshare获取（重试2次）
     if ak is not None:
         for attempt in range(AKSHARE_RETRIES):
             try:
@@ -394,32 +547,25 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
                     _save_to_parquet(df, symbol)
                     return df
             except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
-                # 网络问题，可重试
                 errors.append(f"akshare尝试{attempt+1}: {type(e).__name__}")
                 if attempt < AKSHARE_RETRIES - 1:
                     time.sleep(AKSHARE_RETRY_DELAY)
             except DataNotFoundError:
-                # 数据不存在，不重试
-                raise
+                errors.append(f"akshare尝试{attempt+1}: 数据不存在")
+                break
             except DataSuspendedError:
-                # 停牌，不重试
-                raise
+                errors.append(f"akshare尝试{attempt+1}: 数据停牌")
+                break
             except DataFetchError as e:
-                if "timeout" in e.error_type.lower() or "connection" in e.error_type.lower():
-                    errors.append(f"akshare尝试{attempt+1}: {e.message}")
-                    if attempt < AKSHARE_RETRIES - 1:
-                        time.sleep(AKSHARE_RETRY_DELAY)
-                else:
-                    errors.append(f"akshare尝试{attempt+1}: {e.message}")
-                    if attempt == AKSHARE_RETRIES - 1:
-                        # 最后一次也失败才继续
-                        pass
+                errors.append(f"akshare尝试{attempt+1}: {e.message}")
+                if attempt < AKSHARE_RETRIES - 1:
+                    time.sleep(AKSHARE_RETRY_DELAY)
             except Exception as e:
                 errors.append(f"akshare尝试{attempt+1}: {str(e)}")
                 if attempt < AKSHARE_RETRIES - 1:
                     time.sleep(AKSHARE_RETRY_DELAY)
     
-    # 3. 腾讯API获取（重试2次）
+    # 4. 腾讯API获取（重试2次）
     for attempt in range(TENCENT_RETRIES):
         try:
             df = _fetch_from_tencent(symbol, start_date, end_date, stock_type)
@@ -431,22 +577,17 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
             if attempt < TENCENT_RETRIES - 1:
                 time.sleep(TENCENT_RETRY_DELAY)
         except DataFetchError as e:
-            if "timeout" in e.error_type.lower() or "connection" in e.error_type.lower():
-                errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
-                if attempt < TENCENT_RETRIES - 1:
-                    time.sleep(TENCENT_RETRY_DELAY)
-            else:
-                errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
+            errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
         except Exception as e:
             errors.append(f"腾讯API尝试{attempt+1}: {str(e)}")
             if attempt < TENCENT_RETRIES - 1:
                 time.sleep(TENCENT_RETRY_DELAY)
     
-    # 4. 返回旧缓存（即使过期）
+    # 5. 返回旧缓存（即使过期）
     if local_df is not None and len(local_df) > 0:
         return local_df
     
-    # 5. 全失败
+    # 6. 全失败
     raise DataFetchError(f"所有数据源均失败: {'; '.join(errors)}", "all_sources_failed")
 
 
