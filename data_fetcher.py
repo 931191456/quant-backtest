@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-数据获取模块 v6.0
-- 优先使用东方财富API获取5-7年历史数据
-- akshare作为第二数据源
-- 腾讯API作为第三数据源（备用）
-- 修复腾讯API limit参数（从320改为800）
+数据获取模块 v6.1
+- 腾讯API分段拉取作为首选（5-7年数据，稳定可靠）
+- 东方财富push2his作为备用（Streamlit Cloud可能被封）
+- akshare作为备用（Python 3.14不可用）
+- 本地parquet缓存加速
 - 修复北交所secid格式
 """
 
@@ -38,6 +38,9 @@ DATA_STALE_DAYS = 3
 
 # 东方财富API设置
 EM_API_BASE = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+
+# 腾讯API设置
+TENCENT_API_BASE = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 # ==================== 从本地JSON加载全量数据 ====================
 def load_all_items():
@@ -172,6 +175,71 @@ def _check_data_freshness(df):
     return (datetime.now() - latest).days > DATA_STALE_DAYS
 
 
+def _split_date_range(start_date, end_date, max_per_segment=780):
+    """
+    将日期范围按约3年分段（780个交易日≈3年）
+    每段最多780条数据，确保不超过腾讯API的800条限制
+    """
+    start_dt = datetime.strptime(str(start_date).replace('-', ''), '%Y%m%d')
+    end_dt = datetime.strptime(str(end_date).replace('-', ''), '%Y%m%d')
+    
+    # 3年≈1095天，但按交易日约780条
+    segment_days = 1095  # 约3年
+    segments = []
+    
+    current = start_dt
+    while current < end_dt:
+        seg_end = current + timedelta(days=segment_days)
+        # 确保不超过end_date
+        if seg_end > end_dt:
+            seg_end = end_dt
+        
+        segments.append((
+            current.strftime('%Y-%m-%d'),
+            seg_end.strftime('%Y-%m-%d')
+        ))
+        
+        # 下一段从seg_end的下一天开始
+        current = seg_end + timedelta(days=1)
+    
+    return segments
+
+
+def _get_tencent_secid(symbol, stock_type="stock"):
+    """
+    生成腾讯API的secid格式
+    腾讯API使用 sh/sz 前缀
+    """
+    code = symbol.zfill(6)
+    
+    # ETF特殊处理
+    if stock_type == "ETF":
+        # 上海ETF: 51开头, 50开头
+        if code.startswith("51") or code.startswith("50"):
+            return f"sh{code}"
+        # 深圳ETF: 15/16/13开头
+        elif code.startswith("15") or code.startswith("16") or code.startswith("13"):
+            return f"sz{code}"
+        else:
+            return f"sh{code}"  # 默认上海
+    
+    # 指数处理
+    if stock_type == "指数":
+        if code.startswith("000") or code.startswith("399"):
+            return f"sz{code}"
+        else:
+            return f"sh{code}"
+    
+    # 股票判断
+    first_char = code[0]
+    if first_char in ('5', '6', '9'):  # 上海：6开头主板、5开头ETF/基金、9开头沪市其他
+        return f"sh{code}"
+    elif first_char in ('0', '1', '2', '3', '4', '8'):  # 深圳：0/1/2/3/4/8开头
+        return f"sz{code}"
+    else:
+        return f"sz{code}"  # 默认深圳
+
+
 def _get_em_secid(symbol, stock_type="stock"):
     """
     获取东方财富API的secid格式
@@ -203,40 +271,96 @@ def _get_em_secid(symbol, stock_type="stock"):
         return f"0.{symbol}"  # 深圳主板、创业板、中小板
 
 
-def _get_tencent_prefix(symbol, stock_type="stock"):
+def _fetch_from_tencent(symbol, start_date, end_date, stock_type="stock"):
     """
-    根据代码判断腾讯API需要的前缀
+    从腾讯财经API获取数据，支持分段拉取获取5-7年历史数据
+    
+    腾讯API每次最多800条，分段拉取可以获取完整的历史数据
     """
     symbol = symbol.zfill(6)
+    secid = _get_tencent_secid(symbol, stock_type)
     
-    # ETF特殊处理
-    if stock_type == "ETF":
-        if symbol.startswith("51") or symbol.startswith("50"):
-            return "sh"
-        elif symbol.startswith("15") or symbol.startswith("16") or symbol.startswith("13"):
-            return "sz"
-        else:
-            return "sh"
+    # 将请求的日期范围分成多段，每段最多780条（约3年交易日）
+    segments = _split_date_range(start_date, end_date, max_per_segment=780)
     
-    # 股票判断
-    if symbol.startswith("688"):
-        return "sh"
-    elif symbol.startswith("6"):
-        return "sh"
-    elif symbol.startswith("000") or symbol.startswith("001"):
-        return "sz"
-    elif symbol.startswith("002") or symbol.startswith("003"):
-        return "sz"
-    elif symbol.startswith("300"):
-        return "sz"
-    elif symbol.startswith("4") or symbol.startswith("8"):
-        return "bj"  # 北交所
-    else:
-        return "sh"
+    all_klines = []
+    
+    for seg_start, seg_end in segments:
+        url = f"{TENCENT_API_BASE}?_var=kline_dayqfq&param={secid},day,{seg_start},{seg_end},800,qfq"
+        
+        try:
+            resp = requests.get(url, timeout=TIMEOUT)
+            resp.raise_for_status()
+            text = resp.text
+            
+            if not text or '=' not in text:
+                continue  # 该段失败，尝试下一段
+            
+            # 解析JSONP
+            json_str = text[text.index('=') + 1:]
+            data = json.loads(json_str)
+            
+            if f"{secid}" not in data.get('data', {}):
+                continue  # 该段失败
+            
+            stock_data = data['data'][f"{secid}"]
+            
+            # ETF使用day字段，股票使用qfqday字段
+            # 股票也尝试day字段作为fallback
+            day_data = stock_data.get('qfqday', [])
+            if not day_data and stock_type == "ETF":
+                day_data = stock_data.get('day', [])
+            elif not day_data:
+                day_data = stock_data.get('day', [])
+            
+            if day_data:
+                all_klines.extend(day_data)
+                
+        except Exception:
+            continue  # 该段失败，继续下一段
+    
+    if not all_klines:
+        raise DataFetchError(f"{symbol} 腾讯API无数据", "tencent_empty")
+    
+    # 解析数据
+    records = []
+    for item in all_klines:
+        if len(item) >= 6:
+            try:
+                records.append({
+                    'date': item[0],
+                    'open': float(item[1]),
+                    'close': float(item[2]),
+                    'high': float(item[3]),
+                    'low': float(item[4]),
+                    'volume': float(item[5])
+                })
+            except (ValueError, IndexError):
+                continue
+    
+    if not records:
+        raise DataFetchError(f"{symbol} 腾讯API数据解析失败", "tencent_parse")
+    
+    df = pd.DataFrame(records)
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # 去重（按日期）+ 排序
+    df = df.drop_duplicates(subset=['date'], keep='last')
+    df = df.sort_values('date').reset_index(drop=True)
+    
+    # 按日期筛选
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
+    
+    if len(df) == 0:
+        raise DataFetchError(f"{symbol} 腾讯API数据为空", "tencent_empty")
+    
+    return df
 
 
 def _fetch_from_eastmoney(symbol, start_date, end_date, stock_type="stock"):
-    """从东方财富API获取数据（支持获取5-7年历史数据）"""
+    """从东方财富API获取数据（支持获取5-7年历史数据）- 备用数据源"""
     symbol = symbol.zfill(6)
     secid = _get_em_secid(symbol, stock_type)
     
@@ -297,94 +421,14 @@ def _fetch_from_eastmoney(symbol, start_date, end_date, stock_type="stock"):
         raise DataFetchError(f"{symbol} 东方财富API连接失败", "em_connection")
     except (ConnectionError, RemoteDisconnected) as e:
         raise DataFetchError(f"{symbol} 东方财富API连接中断", "em_connection")
+    except KeyError:
+        raise DataFetchError(f"{symbol} 东方财富API返回数据异常", "em_key_error")
     except json.JSONDecodeError:
         raise DataFetchError(f"{symbol} 东方财富API返回JSON解析失败", "em_parse")
     except DataFetchError:
         raise
     except Exception as e:
         raise DataFetchError(f"{symbol} 东方财富API错误: {str(e)}", "em_error")
-
-
-def _fetch_from_tencent(symbol, start_date, end_date, stock_type="stock"):
-    """从腾讯财经API获取数据"""
-    symbol = symbol.zfill(6)
-    prefix = _get_tencent_prefix(symbol, stock_type)
-    
-    # 转换日期格式
-    start_str = str(start_date).replace('-', '')
-    end_str = str(end_date).replace('-', '')
-    
-    # 注意：腾讯API不支持日期范围，这里忽略日期参数获取所有可用数据
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=kline_dayqfq&param={prefix}{symbol},day,,,800,qfq"
-    
-    try:
-        resp = requests.get(url, timeout=TIMEOUT)
-        resp.raise_for_status()
-        text = resp.text
-        
-        if not text or '=' not in text:
-            raise DataFetchError(f"{symbol} 腾讯API返回数据异常", "tencent_error")
-        
-        # 解析JSONP
-        json_str = text[text.index('=') + 1:]
-        data = json.loads(json_str)
-        
-        if f"{prefix}{symbol}" not in data.get('data', {}):
-            raise DataFetchError(f"{symbol} 腾讯API未找到该股票", "tencent_not_found")
-        
-        stock_data = data['data'][f"{prefix}{symbol}"]
-        
-        # ETF使用day字段，股票使用qfqday字段
-        if stock_type == "ETF":
-            day_data = stock_data.get('day', [])
-        else:
-            day_data = stock_data.get('qfqday', [])
-        
-        if not day_data:
-            raise DataFetchError(f"{symbol} 腾讯API数据为空", "tencent_empty")
-        
-        # 解析数据
-        records = []
-        for item in day_data:
-            if len(item) >= 6:
-                try:
-                    records.append({
-                        'date': item[0],
-                        'open': float(item[1]),
-                        'close': float(item[2]),
-                        'high': float(item[3]),
-                        'low': float(item[4]),
-                        'volume': float(item[5])
-                    })
-                except (ValueError, IndexError):
-                    continue
-        
-        if not records:
-            raise DataFetchError(f"{symbol} 腾讯API数据解析失败", "tencent_parse")
-        
-        df = pd.DataFrame(records)
-        df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values('date').reset_index(drop=True)
-        
-        # 按日期筛选
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        df = df[(df['date'] >= start_dt) & (df['date'] <= end_dt)]
-        
-        return df
-        
-    except requests.exceptions.Timeout:
-        raise DataFetchError(f"{symbol} 腾讯API超时", "tencent_timeout")
-    except requests.exceptions.ConnectionError as e:
-        raise DataFetchError(f"{symbol} 腾讯API连接失败", "tencent_connection")
-    except (ConnectionError, RemoteDisconnected) as e:
-        raise DataFetchError(f"{symbol} 腾讯API连接中断", "tencent_connection")
-    except json.JSONDecodeError:
-        raise DataFetchError(f"{symbol} 腾讯API返回JSON解析失败", "tencent_parse")
-    except DataFetchError:
-        raise
-    except Exception as e:
-        raise DataFetchError(f"{symbol} 腾讯API错误: {str(e)}", "tencent_error")
 
 
 def _fetch_stock_from_akshare(symbol, start_date, end_date, adjust="qfq"):
@@ -481,11 +525,11 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     """
     获取K线数据，多源自动切换（带重试机制）
     
-    获取顺序：
+    获取顺序（v4.3 修复后）：
     1. 本地parquet缓存（如果数据足够新且覆盖请求范围）
-    2. 东方财富API（重试2次，支持5-7年历史数据）
-    3. akshare（重试2次）
-    4. 腾讯API（重试2次）
+    2. 腾讯API（首选！分段拉取5-7年，Streamlit Cloud稳定可用）
+    3. 东方财富push2his API（备用，Streamlit Cloud可能被封）
+    4. akshare（备用，Python 3.14不可用）
     5. 返回旧缓存（即使过期）
     6. 全失败才报错
     
@@ -509,7 +553,25 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
     if local_df is not None and len(local_df) > 0 and not _check_data_freshness(local_df):
         return local_df
     
-    # 2. 东方财富API获取（重试2次，优先获取5-7年历史数据）
+    # 2. 腾讯API获取（首选！分段拉取5-7年数据，Streamlit Cloud稳定可用）
+    for attempt in range(TENCENT_RETRIES):
+        try:
+            df = _fetch_from_tencent(symbol, start_date, end_date, stock_type)
+            if df is not None and len(df) > 0:
+                _save_to_parquet(df, symbol)
+                return df
+        except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
+            errors.append(f"腾讯API尝试{attempt+1}: {type(e).__name__}")
+            if attempt < TENCENT_RETRIES - 1:
+                time.sleep(TENCENT_RETRY_DELAY)
+        except DataFetchError as e:
+            errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
+        except Exception as e:
+            errors.append(f"腾讯API尝试{attempt+1}: {str(e)}")
+            if attempt < TENCENT_RETRIES - 1:
+                time.sleep(TENCENT_RETRY_DELAY)
+    
+    # 3. 东方财富API获取（备用，Streamlit Cloud可能被封）
     for attempt in range(EM_RETRIES):
         try:
             df = _fetch_from_eastmoney(symbol, start_date, end_date, stock_type)
@@ -532,7 +594,7 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
             if attempt < EM_RETRIES - 1:
                 time.sleep(EM_RETRY_DELAY)
     
-    # 3. akshare获取（重试2次）
+    # 4. akshare获取（备用，Python 3.14不可用）
     if ak is not None:
         for attempt in range(AKSHARE_RETRIES):
             try:
@@ -564,24 +626,6 @@ def fetch_data(symbol, start_date, end_date, stock_type="stock", adjust="qfq"):
                 errors.append(f"akshare尝试{attempt+1}: {str(e)}")
                 if attempt < AKSHARE_RETRIES - 1:
                     time.sleep(AKSHARE_RETRY_DELAY)
-    
-    # 4. 腾讯API获取（重试2次）
-    for attempt in range(TENCENT_RETRIES):
-        try:
-            df = _fetch_from_tencent(symbol, start_date, end_date, stock_type)
-            if df is not None and len(df) > 0:
-                _save_to_parquet(df, symbol)
-                return df
-        except (ConnectionError, RemoteDisconnected, Timeout, SSLError) as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {type(e).__name__}")
-            if attempt < TENCENT_RETRIES - 1:
-                time.sleep(TENCENT_RETRY_DELAY)
-        except DataFetchError as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {e.message}")
-        except Exception as e:
-            errors.append(f"腾讯API尝试{attempt+1}: {str(e)}")
-            if attempt < TENCENT_RETRIES - 1:
-                time.sleep(TENCENT_RETRY_DELAY)
     
     # 5. 返回旧缓存（即使过期）
     if local_df is not None and len(local_df) > 0:

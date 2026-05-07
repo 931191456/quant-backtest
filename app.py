@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-量化回测网站 v4.2
+量化回测网站 v4.3
 - 搜索：本地 all_stocks.json（6971条数据），不联网
-- K线行情：东方财富API优先（5-7年数据）+ akshare + 腾讯API fallback
+- K线行情：腾讯API分段拉取（5-7年数据，Streamlit Cloud稳定）+ 东方财富 + akshare fallback
 """
 
 import streamlit as st
