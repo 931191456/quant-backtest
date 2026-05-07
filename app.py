@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 量化回测网站 v4.1
-全市场覆盖：搜索统一走东方财富在线API，支持全市场股票/ETF/指数实时搜索
+- 搜索：本地 all_stocks.json（6971条数据），不联网
+- K线行情：在线获取并存本地parquet，下次秒开
 """
 
 import streamlit as st
