@@ -680,7 +680,7 @@ if st.session_state.results is not None:
         with col6:
             st.metric("亏损次数", results.get('亏损次数', 0))
         with col7:
-            st.metric("胜率", f"{results.get('胜率', 0)*100:.1f}%")
+            st.metric("胜率", f"{results.get('胜率', 0):.1f}%")
         with col8:
             st.metric("总交易次数", results.get('总交易次数', 0))
         
