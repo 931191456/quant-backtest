@@ -328,7 +328,7 @@ with st.sidebar:
     
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("开始", value=datetime.now() - timedelta(days=365))
+        start_date = st.date_input("开始", value=datetime.now() - timedelta(days=365*3), min_value=datetime(2005,1,1))
     with col2:
         end_date = st.date_input("结束", value=datetime.now())
     

@@ -257,8 +257,8 @@ def _get_em_secid(symbol, stock_type="stock"):
             return f"1.{symbol}"  # 上海ETF
     
     if stock_type == "指数":
-        # 指数通常用上海前缀
-        if symbol.startswith("000") or symbol.startswith("399"):
+        # 东方财富API：399开头→深圳(0)，000xxx等上证指数→上海(1)
+        if symbol.startswith("399"):
             return f"0.{symbol}"
         else:
             return f"1.{symbol}"
