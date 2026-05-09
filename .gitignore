@@ -1,4 +1,12 @@
 __pycache__/
 *.pyc
 .git/
-__pycache__/
+data/
+*.parquet
+*.log
+temp_repo/
+repo_clean/
+quant_data_temp/
+github_sync/
+*.json
+!all_stocks.json

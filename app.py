@@ -323,7 +323,7 @@ with st.sidebar:
     initial_capital = st.number_input(
         "初始资金（元）",
         min_value=10000, max_value=100000000,
-        value=100000, step=10000, format="%d"
+        value=500000, step=10000, format="%d"
     )
     
     col1, col2 = st.columns(2)
