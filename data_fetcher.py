@@ -224,8 +224,9 @@ def _get_tencent_secid(symbol, stock_type="stock"):
             return f"sh{code}"  # 默认上海
     
     # 指数处理
+    # 腾讯API：399开头→深圳(sz)，其他(000xxx等上证指数)→上海(sh)
     if stock_type == "指数":
-        if code.startswith("000") or code.startswith("399"):
+        if code.startswith("399"):
             return f"sz{code}"
         else:
             return f"sh{code}"
